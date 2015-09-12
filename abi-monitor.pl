@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 ##################################################################
-# ABI Monitor 1.0
+# ABI Monitor 1.1
 # A tool to monitor new versions of a software library, build them
 # and create profile for ABI Tracker.
 #
@@ -45,7 +45,7 @@ use File::Basename qw(dirname basename);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
-my $TOOL_VERSION = "1.0";
+my $TOOL_VERSION = "1.1";
 my $DB_PATH = "Monitor.data";
 my $REPO = "src";
 my $INSTALLED = "installed";
@@ -438,7 +438,7 @@ sub getVersions()
     }
     
     my @Links = getLinks($SourceUrl);
-    my @Pages = getPages(@Links);
+    my @Pages = getPages($SourceUrl, \@Links);
     
     # One step into directory tree
     foreach my $Page (@Pages)
@@ -446,6 +446,33 @@ sub getVersions()
         foreach my $Link (getLinks($Page))
         {
             push(@Links, $Link);
+        }
+    }
+    
+    if(defined $Profile->{"SourceUrlDepth"})
+    { # More steps into directory tree
+        my $Depth = $Profile->{"SourceUrlDepth"};
+        
+        if($Depth>2)
+        {
+            my %Checked = map {$_=>1} @Pages;
+            
+            foreach my $D (1 .. $Depth - 2)
+            {
+                my @MorePages = getPages($SourceUrl, \@Links);
+                foreach my $Page (@MorePages)
+                {
+                    if(not defined $Checked{$Page})
+                    {
+                        $Checked{$Page} = 1;
+                        foreach my $Link (getLinks($Page))
+                        {
+                            push(@Links, $Link);
+                        }
+                    }
+                }
+                
+            }
         }
     }
     
@@ -514,6 +541,7 @@ sub getPackage($$$)
     if($Log=~/\[text\/html\]/)
     {
         rmtree($Dir);
+        printMsg("ERROR", "\'$Link\' is not a package\n");
         return 0;
     }
     elsif($R or not -f $To or not -s $To)
@@ -534,6 +562,7 @@ sub readPage($)
     
     my $To = $TMP_DIR."/page.html";
     unlink($To);
+    my $Url = $Page;
     
     if($Page=~/\Aftp:.+[^\/]\Z/
     and getFilename($Page)!~/\./)
@@ -563,23 +592,40 @@ sub readPage($)
     waitpid($Pid, 0);
     alarm 0;
     
+    my $Output = readFile($TMP_DIR."/output");
+    
+    while($Output=~s/((http|https|ftp):\/\/[^\s]+)//)
+    { # real URL
+        $Url = $1;
+    }
+    
     my $Res = readFile($TMP_DIR."/result");
     
     if(not $Res) {
-        return $To;
+        return ($To, $Url);
     }
     
     printMsg("ERROR", "can't access page \'$Page\'");
-    return "";
+    return ("", "");
 }
 
 sub getPackages(@)
 {
     my %Res = ();
     
+    my $Pkg = $TARGET_LIB;
+    
+    if(defined $Profile->{"Package"}) {
+        $Pkg = $Profile->{"Package"};
+    }
+    
     foreach my $Link (sort @_)
     {
-        if($Link=~/(\A|\/)(\Q$TARGET_LIB\E[_\-]*([^\/"'<>+%]+?)\.($PKG_EXT))([\/\?]|\Z)/i)
+        if($Link=~/\/\Z/) {
+            next;
+        }
+        
+        if($Link=~/(\A|\/)(\Q$Pkg\E[_\-]*([^\/"'<>+%]+?)\.($PKG_EXT))([\/\?]|\Z)/i)
         {
             my ($P, $V) = ($2, $3);
             
@@ -588,6 +634,10 @@ sub getPackages(@)
             }
             
             if($V=~/mingw|msvc/i) {
+                next;
+            }
+            
+            if($V=~/snapshot/i) {
                 next;
             }
             
@@ -603,20 +653,26 @@ sub getPackages(@)
             my $V = $1;
             
             $Res{$V}{"Url"} = $Link;
-            $Res{$V}{"Pkg"} = $TARGET_LIB."-".$V.".".$3;
+            $Res{$V}{"Pkg"} = $Pkg."-".$V.".".$3;
         }
     }
     
     return \%Res;
 }
 
-sub getPages(@)
+sub getPages($$)
 {
+    my ($Top, $Links) = @_;
     my @Res = ();
     
-    foreach my $Link (@_)
+    foreach my $Link (@{$Links})
     {
         if($Link!~/\/\Z/ and $Link!~/\A\/\d[\d\.\-]*\Z/)
+        {
+            next;
+        }
+        
+        if(index($Link, $Top)==-1)
         {
             next;
         }
@@ -630,7 +686,7 @@ sub getPages(@)
 sub getLinks($)
 {
     my $Page = $_[0];
-    my $To = readPage($Page);
+    my ($To, $Url) = readPage($Page);
     
     if(not $To) {
         return ();
@@ -649,13 +705,13 @@ sub getLinks($)
             $Links1{$2} = 1;
         }
         while($Line=~s/(src|href)\s*\=\s*["']\s*([^"'<>\s]+?)\s*["']//i) {
-            $Links2{linkSum($Page, $2)} = 1;
+            $Links2{linkSum($Url, $2)} = 1;
         }
         while($Line=~s/((ftp|http|https):\/\/[^"'<>\s]+?)([\s"']|\Z)//i) {
             $Links3{$1} = 1;
         }
         while($Line=~s/["']([^"'<>\s]+\.($PKG_EXT))["']//i) {
-            $Links4{linkSum($Page, $1)} = 1;
+            $Links4{linkSum($Url, $1)} = 1;
         }
     }
     
@@ -679,7 +735,7 @@ sub getLinks($)
         $Link=~s/\%2D/-/g;
         $Link=~s/[\/]{2,}\Z/\//g;
         
-        if($Link=~/\A(\Q$Page\E|\Q$SiteAddr\E)[\/]*\Z/) {
+        if($Link=~/\A(\Q$Page\E|\Q$Url\E|\Q$SiteAddr\E)[\/]*\Z/) {
             next;
         }
         
@@ -725,14 +781,10 @@ sub linkSum($$)
 {
     my ($Page, $Path) = @_;
     
-    $Path=~s/\A\.\///g;
     $Page=~s/\?.+?\Z//g;
+    $Path=~s/\A\.\///g;
     
-    if(index($Path, "/")==-1 and $Page=~/\/\Z/)
-    {
-        return $Page.$Path;
-    }
-    elsif(index($Path, "/")==0)
+    if(index($Path, "/")==0)
     {
         if($Path=~/\A\/\/([^\/:]+\.[a-z]+\/.+)\Z/)
         { # //liblouis.googlecode.com/files/liblouis-1.6.2.tar.gz
@@ -744,9 +796,12 @@ sub linkSum($$)
     elsif(index($Path, "://")!=-1) {
         return $Path;
     }
+    elsif($Page=~/\/\Z/)
+    {
+        return $Page.$Path;
+    }
     
-    $Page=~s/\/\Z//g;
-    return $Page."/".$Path;
+    return getDirname($Page)."/".$Path;
 }
 
 sub buildVersions()
@@ -1043,7 +1098,8 @@ sub findChangelog($)
     
     foreach my $Name ("ChangeLog", "Changelog", "NEWS")
     {
-        if(-f $Dir."/".$Name)
+        if(-f $Dir."/".$Name
+        and -s $Dir."/".$Name)
         {
             return $Name;
         }
@@ -1063,7 +1119,7 @@ sub autoBuild($$)
     
     my ($CMake, $Autotools, $Scons) = (0, 0, 0);
     
-    my ($Configure, $Autogen) = (0, 0);
+    my ($Configure, $Autogen, $Bootstrap) = (0, 0, 0);
     
     foreach my $File (sort @Files)
     {
@@ -1080,6 +1136,9 @@ sub autoBuild($$)
         }
         elsif($File eq "autogen.sh") {
             $Autogen = 1;
+        }
+        elsif($File eq "bootstrap") {
+            $Bootstrap = 1;
         }
         elsif($File eq "SConstruct") {
             $Scons = 1;
@@ -1101,6 +1160,20 @@ sub autoBuild($$)
                 {
                     printMsg("ERROR", "failed to 'autogen'");
                     printMsg("ERROR", "see error log in '$LogDir_R/autogen'");
+                    return 0;
+                }
+            }
+            elsif($Bootstrap)
+            {
+                my $Cmd_B = "sh bootstrap";
+                $Cmd_B .= " >\"$LogDir/bootstrap\" 2>&1";
+                
+                qx/$Cmd_B/;
+                
+                if(not -f "configure")
+                {
+                    printMsg("ERROR", "failed to 'bootstrap'");
+                    printMsg("ERROR", "see error log in '$LogDir_R/bootstrap'");
                     return 0;
                 }
             }
@@ -1214,12 +1287,56 @@ sub autoBuild($$)
         }
     }
     
+    if(my $PostInstall = $Profile->{"PostInstall"})
+    {
+        $PostInstall=~s/{INSTALL_TO}/$To/g;
+        my $Cmd_P = $PostInstall." >$LogDir/post_install 2>&1";
+        qx/$Cmd_P/; # execute
+        if($?)
+        {
+            printMsg("ERROR", "post install has failed");
+            printMsg("ERROR", "see error log in '$LogDir_R/post_install'");
+            return 0;
+        }
+    }
+    
+    if(my $Dirs = $Profile->{"CopyHeaders"})
+    {
+        foreach my $D (@{$Dirs})
+        {
+            foreach my $H (findHeaders($D))
+            {
+                my $H_To = $To."/include/".$H;
+                my $D_To = getDirname($H_To);
+                mkpath($D_To);
+                copy($H, $D_To);
+            }
+        }
+    }
+    
     if(not listDir($To))
     {
         return 0;
     }
     
     return 1;
+}
+
+sub findHeaders($)
+{
+    my $Dir = $_[0];
+    
+    my @Files = findFiles($Dir, "f");
+    my @Headers = ();
+    
+    foreach my $File (sort {lc($a) cmp lc($b)} @Files)
+    {
+        if(isHeader($File)) {
+            push(@Headers, $File);
+        }
+    }
+    
+    return @Headers;
 }
 
 sub buildPackage($$)
@@ -1265,8 +1382,10 @@ sub buildPackage($$)
     
     if($V eq "current")
     {
-        my $Cmd_E = "cp -fr $Package/* $BuildDir";
+        my $Cmd_E = "cp -fr $Package $BuildDir";
         qx/$Cmd_E/; # execute
+        
+        $BuildDir .= "/current";
     }
     else
     {
@@ -1337,8 +1456,10 @@ sub buildPackage($$)
     {
         detectPublic($V);
         
-        rmtree($InstallDir."/share");
-        rmtree($InstallDir."/bin");
+        foreach my $D ("share", "bin", "sbin", "etc")
+        {
+            rmtree($InstallDir."/".$D);
+        }
     }
     else
     {
@@ -1491,6 +1612,12 @@ sub scenario()
     if($DumpVersion)
     {
         printMsg("INFO", $TOOL_VERSION);
+        exit(0);
+    }
+    
+    if($Help)
+    {
+        printMsg("INFO", $HelpMessage);
         exit(0);
     }
     
