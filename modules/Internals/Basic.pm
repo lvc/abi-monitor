@@ -10,11 +10,15 @@ use strict;
 
 sub findFiles(@)
 {
-    my ($Path, $Type) = @_;
+    my ($Path, $Type, $Regex) = @_;
     my $Cmd = "find \"$Path\"";
     
     if($Type) {
         $Cmd .= " -type ".$Type;
+    }
+    
+    if($Regex) {
+        $Cmd .= " -regex \"".$Regex."\"";
     }
     
     my @Res = split(/\n/, `$Cmd`);

@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 ##################################################################
-# ABI Monitor 1.1
+# ABI Monitor 1.2
 # A tool to monitor new versions of a software library, build them
 # and create profile for ABI Tracker.
 #
@@ -45,7 +45,7 @@ use File::Basename qw(dirname basename);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
-my $TOOL_VERSION = "1.1";
+my $TOOL_VERSION = "1.2";
 my $DB_PATH = "Monitor.data";
 my $REPO = "src";
 my $INSTALLED = "installed";
@@ -64,9 +64,13 @@ push(@INC, dirname($MODULES_DIR));
 
 my $CTAGS = "ctags";
 my $CMAKE = "cmake";
+my $GCC = "gcc";
+
+my $C_FLAGS = "-g -Og -w -fpermissive";
+my $CXX_FLAGS = $C_FLAGS;
 
 my ($Help, $DumpVersion, $Get, $Build, $Rebuild, $OutputProfile,
-$TargetVersion, $LimitOps, $PublicSymbols);
+$TargetVersion, $LimitOps, $BuildShared, $PublicSymbols);
 
 my $CmdName = basename($0);
 my $ORIG_DIR = cwd();
@@ -109,6 +113,7 @@ GetOptions("h|help!" => \$Help,
   "limit=s" => \$LimitOps,
   "v=s" => \$TargetVersion,
   "output=s" => \$OutputProfile,
+  "build-shared!" => \$BuildShared,
   "public-symbols!" => \$PublicSymbols
 ) or ERR_MESSAGE();
 
@@ -167,6 +172,10 @@ GENERAL OPTIONS:
   -output PATH
       Path to output profile. The tool will overwrite the
       input profile by default.
+  
+  -build-shared
+      Build shared objects from static ones if they cannot
+      be build by the library makefile or build script.
   
   -public-symbols
       Re-generate lists of public symbols and types.
@@ -753,6 +762,7 @@ sub getLinks($)
         }
         
         $Link=~s/\%2b/\+/g;
+        $Link=~s/\:21\//\//;
         
         push(@Res, $Link);
     }
@@ -810,6 +820,18 @@ sub buildVersions()
     {
         printMsg("INFO", "Nothing to build");
         return;
+    }
+    
+    if(check_Cmd($GCC))
+    {
+        if(my $Machine = qx/$GCC -dumpmachine/)
+        {
+            if($Machine=~/x86_64/)
+            {
+                $C_FLAGS .= " -fPIC";
+                $CXX_FLAGS .= " -fPIC";
+            }
+        }
     }
     
     my @Versions = keys(%{$DB->{"Source"}});
@@ -917,7 +939,8 @@ sub createProfile($)
         return;
     }
     
-    my @ProfileKeys = ("Name", "Title", "SourceUrl", "SkipUrl", "Git", "Svn", "Doc", "SkipSymbols", "Maintainer", "MaintainerUrl", "BuildScript", "Configure", "SkipObjects");
+    my @ProfileKeys = ("Name", "Title", "SourceUrl", "SourceUrlDepth", "SourceDir", "SkipUrl", "Git", "Svn", "Doc",
+    "Maintainer", "MaintainerUrl", "Configure", "BuildScript", "PreInstall", "PostInstall", "SkipSymbols", "SkipObjects");
     my $MaxLen_P = 13;
     
     my %UnknownKeys = ();
@@ -1052,7 +1075,8 @@ sub createProfile($)
             }
         }
         
-        my @VersionKeys = ("Number", "Installed", "Source", "Changelog", "HeadersDiff", "PkgDiff", "ABIView", "ABIDiff", "PublicSymbols", "PublicTypes", "Deleted");
+        my @VersionKeys = ("Number", "Installed", "Source", "Changelog", "HeadersDiff", "PkgDiff", "ABIView",
+        "ABIDiff", "PublicSymbols", "PublicTypes", "BuildShared", "Deleted");
         
         my $MaxLen_V = 13;
         
@@ -1096,7 +1120,7 @@ sub findChangelog($)
 {
     my $Dir = $_[0];
     
-    foreach my $Name ("ChangeLog", "Changelog", "NEWS")
+    foreach my $Name ("NEWS", "CHANGES", "RELEASE_NOTES", "ChangeLog", "Changelog")
     {
         if(-f $Dir."/".$Name
         and -s $Dir."/".$Name)
@@ -1114,6 +1138,19 @@ sub autoBuild($$)
     
     my $LogDir_R = $LogDir;
     $LogDir_R=~s/\A$ORIG_DIR\///;
+    
+    if(my $PreInstall = $Profile->{"PreInstall"})
+    {
+        $PreInstall=~s/{INSTALL_TO}/$To/g;
+        my $Cmd_P = $PreInstall." >$LogDir/pre_install 2>&1";
+        qx/$Cmd_P/; # execute
+        if($?)
+        {
+            printMsg("ERROR", "pre install has failed");
+            printMsg("ERROR", "see error log in '$LogDir_R/pre_install'");
+            return 0;
+        }
+    }
     
     my @Files = listDir(".");
     
@@ -1200,7 +1237,7 @@ sub autoBuild($$)
         
         my $Cmd_C = $CMAKE." .. -DCMAKE_BUILD_TYPE=Debug -DBUILD_SHARED_LIBS=ON";
         $Cmd_C .= " -DCMAKE_INSTALL_PREFIX=\"$To\"";
-        $Cmd_C .= " -DCMAKE_C_FLAGS=\"-g -Og -w\" -DCMAKE_CXX_FLAGS=\"-g -Og -w\"";
+        $Cmd_C .= " -DCMAKE_C_FLAGS=\"$C_FLAGS\" -DCMAKE_CXX_FLAGS=\"$CXX_FLAGS\"";
         
         if($ConfigOptions) {
             $Cmd_C .= " ".$ConfigOptions;
@@ -1220,7 +1257,7 @@ sub autoBuild($$)
     {
         my $Cmd_C = "./configure --enable-shared";
         $Cmd_C .= " --prefix=\"$To\"";
-        $Cmd_C .= " CXXFLAGS=\"-g -Og -w\" CFLAGS=\"-g -Og -w\"";
+        $Cmd_C .= " CFLAGS=\"$C_FLAGS\" CXXFLAGS=\"$CXX_FLAGS\"";
         
         if($ConfigOptions) {
             $Cmd_C .= " ".$ConfigOptions;
@@ -1365,11 +1402,11 @@ sub buildPackage($$)
         $BuildScript = abs_path($BuildScript);
     }
     
-    my $LogDir = $BUILD_LOGS."/".$TARGET_LIB."/".$V;
-    rmtree($LogDir);
-    mkpath($LogDir);
+    my $LogDir_R = $BUILD_LOGS."/".$TARGET_LIB."/".$V;
+    rmtree($LogDir_R);
+    mkpath($LogDir_R);
     
-    $LogDir = abs_path($LogDir);
+    my $LogDir = abs_path($LogDir_R);
     
     my $InstallDir = $INSTALLED."/".$TARGET_LIB."/".$V;
     rmtree($InstallDir);
@@ -1434,6 +1471,9 @@ sub buildPackage($$)
         if($? or not listDir($InstallDir_A))
         {
             delete($DB->{"Installed"}{$V});
+            
+            printMsg("ERROR", "custom build has failed");
+            printMsg("ERROR", "see error log in '$LogDir_R/build'");
         }
         else {
             $DB->{"Installed"}{$V} = $InstallDir;
@@ -1456,7 +1496,15 @@ sub buildPackage($$)
     {
         detectPublic($V);
         
-        foreach my $D ("share", "bin", "sbin", "etc")
+        if(($Profile->{"Versions"}{$V}{"BuildShared"}
+        and $Profile->{"Versions"}{$V}{"BuildShared"} ne "Off")
+        or ($Profile->{"BuildShared"} and $Profile->{"BuildShared"} ne "Off"))
+        {
+            buildShared($V);
+        }
+        
+        foreach my $D ("share", "bin", "sbin",
+        "etc", "var", "opt", "libexec")
         {
             rmtree($InstallDir."/".$D);
         }
@@ -1468,6 +1516,69 @@ sub buildPackage($$)
     }
     
     return 1;
+}
+
+sub buildShared($)
+{
+    my $V = $_[0];
+    
+    my $Installed = $DB->{"Installed"}{$V};
+    
+    if(not -d $Installed) {
+        return 0;
+    }
+    
+    if(not check_Cmd($GCC)) {
+        return 0;
+    }
+    
+    my @Objects = findStatic($Installed);
+    
+    foreach my $Object (@Objects)
+    {
+        my $CDir = $TMP_DIR."/convert";
+        mkpath($CDir);
+        
+        my $Object_A = abs_path($Object);
+        my $To = getDirname($Object);
+        
+        chdir($CDir);
+        
+        my $Cmd_E = "ar -x \"$Object_A\"";
+        qx/$Cmd_E/;
+        
+        if($?)
+        {
+            print STDERR "ERROR: failed to extract static object(s)\n";
+            chdir($ORIG_DIR);
+            return 0;
+        }
+        
+        my $Object_S = getFilename($Object);
+        $Object_S=~s/\.a\Z/.so/g;
+        
+        my $Cmd_B = $GCC." -shared -o \"$Object_S\" *.o";
+        qx/$Cmd_B/;
+        
+        if($?)
+        {
+            print STDERR "ERROR: failed to build shared object(s)\n";
+            chdir($ORIG_DIR);
+            return 0;
+        }
+        
+        chdir($ORIG_DIR);
+        move($CDir."/".$Object_S, $To);
+        print "Created \'$To/$Object_S\'\n";
+        rmtree($CDir);
+    }
+}
+
+sub findStatic($)
+{
+    my $Dir = $_[0];
+    
+    return findFiles($Dir, "f", ".*\\.a");
 }
 
 sub readDB($)
@@ -1662,6 +1773,17 @@ sub scenario()
     
     if($Build) {
         buildVersions();
+    }
+    
+    if($BuildShared)
+    {
+        if(defined $TargetVersion)
+        {
+            buildShared($TargetVersion);
+        }
+        else {
+            print STDERR "ERROR: target version should be specified to build shared objects from static ones\n";
+        }
     }
     
     if($PublicSymbols)
