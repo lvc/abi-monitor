@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 ##################################################################
-# ABI Monitor 1.2
+# ABI Monitor 1.3
 # A tool to monitor new versions of a software library, build them
 # and create profile for ABI Tracker.
 #
@@ -45,7 +45,7 @@ use File::Basename qw(dirname basename);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
-my $TOOL_VERSION = "1.2";
+my $TOOL_VERSION = "1.3";
 my $DB_PATH = "Monitor.data";
 my $REPO = "src";
 my $INSTALLED = "installed";
@@ -650,6 +650,8 @@ sub getPackages(@)
                 next;
             }
             
+            $V=~s/\Av(\d)/$1/i; # v1.1
+            
             if(getVersionType($V) eq "unknown") {
                 next;
             }
@@ -989,6 +991,13 @@ sub createProfile($)
     
     if(defined $Profile->{"Versions"})
     { # save order of versions in the profile if manually edited
+        foreach my $V (keys(%{$Profile->{"Versions"}}))
+        { # clear variable
+            if(not defined $Profile->{"Versions"}{$V}{"Pos"}) {
+                delete($Profile->{"Versions"}{$V});
+            }
+        }
+        
         my @O_Versions = keys(%{$Profile->{"Versions"}});
         @O_Versions = sort {int($Profile->{"Versions"}{$b}{"Pos"})<=>int($Profile->{"Versions"}{$a}{"Pos"})} @O_Versions;
         my %Added = map {$_=>1} @O_Versions;
@@ -1496,8 +1505,8 @@ sub buildPackage($$)
     {
         detectPublic($V);
         
-        if(($Profile->{"Versions"}{$V}{"BuildShared"}
-        and $Profile->{"Versions"}{$V}{"BuildShared"} ne "Off")
+        if((defined $Profile->{"Versions"} and defined $Profile->{"Versions"}{$V}
+        and $Profile->{"Versions"}{$V}{"BuildShared"} and $Profile->{"Versions"}{$V}{"BuildShared"} ne "Off")
         or ($Profile->{"BuildShared"} and $Profile->{"BuildShared"} ne "Off"))
         {
             buildShared($V);
