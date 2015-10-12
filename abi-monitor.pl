@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 ##################################################################
-# ABI Monitor 1.3
+# ABI Monitor 1.4
 # A tool to monitor new versions of a software library, build them
 # and create profile for ABI Tracker.
 #
@@ -45,7 +45,7 @@ use File::Basename qw(dirname basename);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
-my $TOOL_VERSION = "1.3";
+my $TOOL_VERSION = "1.4";
 my $DB_PATH = "Monitor.data";
 my $REPO = "src";
 my $INSTALLED = "installed";
@@ -53,6 +53,7 @@ my $PUBLIC_SYMBOLS = "public_symbols";
 my $PUBLIC_TYPES = "public_types";
 my $BUILD_LOGS = "build_logs";
 my $TMP_DIR = tempdir(CLEANUP=>1);
+my $TMP_DIR_LOC = "Off";
 my $ACCESS_TIMEOUT = 15;
 my $CONNECT_TIMEOUT = 5;
 my $ACCESS_TRIES = 2;
@@ -70,7 +71,7 @@ my $C_FLAGS = "-g -Og -w -fpermissive";
 my $CXX_FLAGS = $C_FLAGS;
 
 my ($Help, $DumpVersion, $Get, $Build, $Rebuild, $OutputProfile,
-$TargetVersion, $LimitOps, $BuildShared, $PublicSymbols);
+$TargetVersion, $LimitOps, $BuildShared, $BuildNew);
 
 my $CmdName = basename($0);
 my $ORIG_DIR = cwd();
@@ -114,7 +115,7 @@ GetOptions("h|help!" => \$Help,
   "v=s" => \$TargetVersion,
   "output=s" => \$OutputProfile,
   "build-shared!" => \$BuildShared,
-  "public-symbols!" => \$PublicSymbols
+  "build-new!" => \$BuildNew
 ) or ERR_MESSAGE();
 
 sub ERR_MESSAGE()
@@ -177,14 +178,17 @@ GENERAL OPTIONS:
       Build shared objects from static ones if they cannot
       be build by the library makefile or build script.
   
-  -public-symbols
-      Re-generate lists of public symbols and types.
+  -build-new
+      Build newly found packages only. This option should
+      be used with -get option.
 ";
 
 # Global
 my $Profile;
 my $DB;
 my $TARGET_LIB;
+
+my %NewVer;
 
 sub get_Modules()
 {
@@ -345,6 +349,8 @@ sub getCurrent()
         }
     }
     
+    my $UpToDate = 0;
+    
     if(-d $CurRepo)
     {
         chdir($CurRepo);
@@ -352,12 +358,20 @@ sub getCurrent()
         if($Git)
         {
             printMsg("INFO", "Updating source code in repository");
-            system("git pull");
+            my $Log = qx/git pull/;
+            
+            if($Log=~/Already up\-to\-date/i) {
+                $UpToDate = 1;
+            }
         }
         elsif($Svn)
         {
             printMsg("INFO", "Updating source code in repository");
-            system("svn update");
+            my $Log = qx/svn update/;
+            
+            if($Log!~/Updated to revision/i) {
+                $UpToDate = 1;
+            }
         }
     }
     else
@@ -377,6 +391,70 @@ sub getCurrent()
     chdir($ORIG_DIR);
     
     $DB->{"Source"}{"current"} = $CurRepo;
+    
+    my $UTime = getScmUpdateTime();
+    if(not $UpToDate)
+    {
+        if($DB->{"ScmUpdateTime"})
+        {
+            if($DB->{"ScmUpdateTime"} ne $UTime) {
+                $NewVer{"current"} = 1;
+            }
+        }
+        else {
+            $NewVer{"current"} = 1;
+        }
+    }
+    $DB->{"ScmUpdateTime"} = $UTime;
+}
+
+sub getScmUpdateTime()
+{
+    if(my $Source = $DB->{"Source"}{"current"})
+    {
+        if(not -d $Source) {
+            return undef;
+        }
+        
+        my $Time = undef;
+        my $Head = undef;
+        
+        if(defined $Profile->{"Git"})
+        {
+            $Head = "$Source/.git/FETCH_HEAD";
+            
+            if(not -f $Head)
+            { # is not updated yet
+                $Head = "$Source/.git/HEAD";
+            }
+            
+            if(not -f $Head)
+            {
+                $Head = undef;
+            }
+        }
+        elsif(defined $Profile->{"Svn"})
+        {
+            $Head = "$Source/.svn/wc.db";
+            
+            if(not -f $Head)
+            {
+                $Head = undef;
+            }
+        }
+        
+        if($Head)
+        {
+            $Time = `stat -c \%Y \"$Head\"`;
+            chomp($Time);
+        }
+        
+        if($Time) {
+            return $Time;
+        }
+    }
+    
+    return undef;
 }
 
 sub getVersions_Local()
@@ -411,6 +489,8 @@ sub getVersions_Local()
             if(not -d $To or not listDir($To))
             {
                 printMsg("INFO", "Found $File");
+                
+                $NewVer{$V} = 1;
                 
                 # copy to local directory
                 # mkpath($To);
@@ -486,22 +566,26 @@ sub getVersions()
     }
     
     my $Packages = getPackages(@Links);
-    my $Total = 0;
+    my $NumOp = 0;
     
-    foreach my $V (sort {cmpVersions($b, $a)} keys(%{$Packages}))
+    foreach my $V (sort {cmpVersions_P($b, $a, $Profile)} keys(%{$Packages}))
     {
-        $Total += getPackage($Packages->{$V}{"Url"}, $Packages->{$V}{"Pkg"}, $V);
+        my $R = getPackage($Packages->{$V}{"Url"}, $Packages->{$V}{"Pkg"}, $V);
+        
+        if($R>0) {
+            $NumOp += 1;
+        }
         
         if(defined $LimitOps)
         {
-            if($Total>=$LimitOps)
+            if($NumOp>=$LimitOps)
             {
                 last;
             }
         }
     }
     
-    if(not $Total) {
+    if(not $NumOp) {
         printMsg("INFO", "No new packages found");
     }
 }
@@ -512,7 +596,7 @@ sub getPackage($$$)
     
     if(defined $DB->{"Source"}{$V})
     { # already downloaded
-        return 0;
+        return -1;
     }
     
     my $Dir = $REPO."/".$TARGET_LIB."/".$V;
@@ -523,7 +607,7 @@ sub getPackage($$$)
     
     my $To = $Dir."/".$P;
     if(-f $To) {
-        return 0;
+        return -1;
     }
     
     printMsg("INFO", "Downloading package \'$P\'");
@@ -531,7 +615,7 @@ sub getPackage($$$)
     my $Pid = fork();
     unless($Pid)
     { # child
-        my $Cmd = "wget --no-check-certificate \"$Link\" --connect-timeout=5 --tries=1 --output-document=\"$To\" 2>&1"; # -U ''
+        my $Cmd = "wget --no-check-certificate \"$Link\" --connect-timeout=5 --tries=1 --output-document=\"$To\""; # -U ''
         
         system($Cmd." >".$TMP_DIR."/wget_log 2>&1");
         writeFile($TMP_DIR."/wget_res", $?);
@@ -652,7 +736,11 @@ sub getPackages(@)
             
             $V=~s/\Av(\d)/$1/i; # v1.1
             
-            if(getVersionType($V) eq "unknown") {
+            if(getVersionType($V, $Profile) eq "unknown") {
+                next;
+            }
+            
+            if(skipVersion($V, $Profile)) {
                 next;
             }
             
@@ -837,12 +925,11 @@ sub buildVersions()
     }
     
     my @Versions = keys(%{$DB->{"Source"}});
-    @Versions = naturalSequence(@Versions);
+    @Versions = naturalSequence($Profile, @Versions);
     
     @Versions = reverse(@Versions);
     
     my $NumOp = 0;
-    my $Built = 0;
     
     foreach my $V (@Versions)
     {
@@ -853,8 +940,18 @@ sub buildVersions()
             }
         }
         
-        $NumOp += 1;
-        $Built += buildPackage($DB->{"Source"}{$V}, $V);
+        if(defined $BuildNew)
+        {
+            if(not defined $NewVer{$V}) {
+                next;
+            }
+        }
+        
+        my $R = buildPackage($DB->{"Source"}{$V}, $V);
+        
+        if($R>0) {
+            $NumOp += 1;
+        }
         
         if(defined $LimitOps)
         {
@@ -865,70 +962,11 @@ sub buildVersions()
         }
     }
     
-    if(not $Built)
+    if(not $NumOp)
     {
         printMsg("INFO", "Nothing to build");
         return;
     }
-}
-
-sub detectPublic($)
-{
-    my $V = $_[0];
-    
-    printMsg("INFO", "Detecting public symbols and types in $V");
-    
-    if(not check_Cmd($CTAGS))
-    {
-        printMsg("ERROR", "can't find \"$CTAGS\"");
-        return;
-    }
-    
-    my $Output_S = $PUBLIC_SYMBOLS."/".$TARGET_LIB."/".$V."/list";
-    my $Output_T = $PUBLIC_TYPES."/".$TARGET_LIB."/".$V."/list";
-    
-    my $Installed = $DB->{"Installed"}{$V};
-    my %Public_S = ();
-    my %Public_T = ();
-    
-    foreach my $Path (findFiles($Installed, "f"))
-    {
-        if(isHeader($Path))
-        {
-            my $RPath = $Path;
-            $RPath=~s/\A\Q$Installed\E\/?//g;
-            
-            my $IgnoreTags = "";
-            
-            if(-f $MODULES_DIR."/ignore.tags") {
-                $IgnoreTags = "-I \@$MODULES_DIR/ignore.tags";
-            }
-            
-            my $List_S = `$CTAGS -x --c-kinds=pfxv $IgnoreTags \"$Path\"`; # NOTE: short names in C++
-            foreach my $Line (split(/\n/, $List_S))
-            {
-                if($Line=~/\A(\w+)/)
-                {
-                    $Public_S{$RPath}{$1} = 1;
-                }
-            }
-            
-            my $List_T = `$CTAGS -x --c-kinds=csugt $IgnoreTags \"$Path\"`;
-            foreach my $Line (split(/\n/, $List_T))
-            {
-                if($Line=~/\A(\w+)/)
-                {
-                    $Public_T{$RPath}{$1} = 1;
-                }
-            }
-        }
-    }
-    
-    writeFile($Output_S, Dumper(\%Public_S));
-    $DB->{"PublicSymbols"}{$V} = $Output_S;
-    
-    writeFile($Output_T, Dumper(\%Public_T));
-    $DB->{"PublicTypes"}{$V} = $Output_T;
 }
 
 sub createProfile($)
@@ -987,7 +1025,7 @@ sub createProfile($)
     my @Content_V = ();
     
     my @Versions = keys(%{$DB->{"Installed"}});
-    @Versions = naturalSequence(@Versions);
+    @Versions = naturalSequence($Profile, @Versions);
     
     if(defined $Profile->{"Versions"})
     { # save order of versions in the profile if manually edited
@@ -1011,7 +1049,7 @@ sub createProfile($)
             {
                 if(not defined $Added{$V2})
                 {
-                    if(cmpVersions($V2, $V1)==-1)
+                    if(cmpVersions_P($V2, $V1, $Profile)==-1)
                     {
                         push(@Merged, $V2);
                         $Added{$V2} = 1;
@@ -1027,7 +1065,7 @@ sub createProfile($)
                 {
                     if(not defined $Added{$V2})
                     {
-                        if(cmpVersions($V2, $V1)==1)
+                        if(cmpVersions_P($V2, $V1, $Profile)==1)
                         {
                             push(@Merged, $V2);
                             $Added{$V2} = 1;
@@ -1066,8 +1104,8 @@ sub createProfile($)
         $N_Info->{"ABIView"} = "Off";
         $N_Info->{"ABIDiff"} = "Off";
         
-        $N_Info->{"PublicSymbols"} = $DB->{"PublicSymbols"}{$V};
-        $N_Info->{"PublicTypes"} = $DB->{"PublicTypes"}{$V};
+        $N_Info->{"PublicSymbols"} = $DB->{"PublicSymbols"}{$V}; # Obsolete
+        $N_Info->{"PublicTypes"} = $DB->{"PublicTypes"}{$V}; # Obsolete
         
         if(defined $Profile->{"Versions"} and defined $Profile->{"Versions"}{$V})
         {
@@ -1129,7 +1167,8 @@ sub findChangelog($)
 {
     my $Dir = $_[0];
     
-    foreach my $Name ("NEWS", "CHANGES", "RELEASE_NOTES", "ChangeLog", "Changelog")
+    foreach my $Name ("NEWS", "CHANGES", "RELEASE_NOTES", "ChangeLog", "Changelog",
+    "RELEASE_NOTES.md", "RELEASE_NOTES.markdown")
     {
         if(-f $Dir."/".$Name
         and -s $Dir."/".$Name)
@@ -1191,7 +1230,17 @@ sub autoBuild($$)
         }
     }
     
-    if($Autotools)
+    if(defined $Profile->{"BuildSystem"})
+    {
+        if($Profile->{"BuildSystem"} eq "CMake") {
+            $Autotools = 0;
+        }
+        elsif($Profile->{"BuildSystem"} eq "Autotools") {
+            $CMake = 0;
+        }
+    }
+    
+    if($Autotools and not $CMake)
     {
         if(not $Configure)
         { # try to generate configure script
@@ -1360,12 +1409,33 @@ sub autoBuild($$)
         }
     }
     
+    if(my $Dirs = $Profile->{"CopyObjects"})
+    {
+        foreach my $D (@{$Dirs})
+        {
+            foreach my $Obj (findObjects($D))
+            {
+                my $O_To = $To."/lib/".$Obj;
+                my $D_To = getDirname($O_To);
+                mkpath($D_To);
+                copy($Obj, $D_To);
+            }
+        }
+    }
+    
     if(not listDir($To))
     {
         return 0;
     }
     
     return 1;
+}
+
+sub findObjects($)
+{
+    my $Dir = $_[0];
+    
+    return findFiles($Dir, "f", ".*\\.so[0-9.]*");
 }
 
 sub findHeaders($)
@@ -1393,7 +1463,10 @@ sub buildPackage($$)
     {
         if(defined $DB->{"Installed"}{$V})
         {
-            return 0;
+            if(not defined $NewVer{$V})
+            {
+                return -1;
+            }
         }
     }
     
@@ -1503,8 +1576,6 @@ sub buildPackage($$)
     
     if($DB->{"Installed"}{$V})
     {
-        detectPublic($V);
-        
         if((defined $Profile->{"Versions"} and defined $Profile->{"Versions"}{$V}
         and $Profile->{"Versions"}{$V}{"BuildShared"} and $Profile->{"Versions"}{$V}{"BuildShared"} ne "Off")
         or ($Profile->{"BuildShared"} and $Profile->{"BuildShared"} ne "Off"))
@@ -1513,7 +1584,7 @@ sub buildPackage($$)
         }
         
         foreach my $D ("share", "bin", "sbin",
-        "etc", "var", "opt", "libexec")
+        "etc", "var", "opt", "libexec", "doc")
         {
             rmtree($InstallDir."/".$D);
         }
@@ -1647,6 +1718,7 @@ sub checkFiles()
         }
     }
     
+    # Obsolete
     my $Public_S = $PUBLIC_SYMBOLS."/".$TARGET_LIB;
     foreach my $V (listDir($Public_S))
     {
@@ -1656,6 +1728,7 @@ sub checkFiles()
         }
     }
     
+    # Obsolete
     my $Public_T = $PUBLIC_TYPES."/".$TARGET_LIB;
     foreach my $V (listDir($Public_T))
     {
@@ -1684,6 +1757,7 @@ sub checkDB()
         }
     }
     
+    # Obsolete
     foreach my $V (keys(%{$DB->{"PublicSymbols"}}))
     {
         if(not -f $DB->{"PublicSymbols"}{$V})
@@ -1692,6 +1766,7 @@ sub checkDB()
         }
     }
     
+    # Obsolete
     foreach my $V (keys(%{$DB->{"PublicTypes"}}))
     {
         if(not -f $DB->{"PublicTypes"}{$V})
@@ -1708,6 +1783,10 @@ sub safeExit()
     printMsg("INFO", "\nReceived SIGINT");
     printMsg("INFO", "Exiting");
     
+    if($TMP_DIR_LOC eq "On") {
+        rmtree($TMP_DIR);
+    }
+    
     writeDB($DB_PATH);
     exit(1);
 }
@@ -1718,7 +1797,7 @@ sub scenario()
     
     $SIG{INT} = \&safeExit;
     
-    if($Rebuild) {
+    if($Rebuild or $BuildNew) {
         $Build = 1;
     }
     
@@ -1760,6 +1839,15 @@ sub scenario()
         exitStatus("Error", "name of the library is not specified in profile");
     }
     
+    if(defined $Profile->{"LocalBuild"}
+    and $Profile->{"LocalBuild"} eq "On")
+    {
+        $TMP_DIR_LOC = "On";
+        $TMP_DIR = ".tmp";
+        mkpath($TMP_DIR);
+        $TMP_DIR = abs_path($TMP_DIR);
+    }
+    
     $TARGET_LIB = $Profile->{"Name"};
     $DB_PATH = "db/".$TARGET_LIB."/".$DB_PATH;
     
@@ -1795,20 +1883,6 @@ sub scenario()
         }
     }
     
-    if($PublicSymbols)
-    {
-        foreach my $V (sort {cmpVersions($b, $a)} keys(%{$DB->{"Installed"}}))
-        {
-            if(defined $TargetVersion)
-            {
-                if($TargetVersion ne $V) {
-                    next;
-                }
-            }
-            detectPublic($V);
-        }
-    }
-    
     writeDB($DB_PATH);
     
     my $Output = $OutputProfile;
@@ -1817,6 +1891,10 @@ sub scenario()
     }
     
     createProfile($Output);
+    
+    if($TMP_DIR_LOC eq "On") {
+        rmtree($TMP_DIR);
+    }
 }
 
 scenario();

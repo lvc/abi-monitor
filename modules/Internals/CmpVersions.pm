@@ -221,18 +221,72 @@ sub symbolCmp($$)
     return -1;
 }
 
+sub cmpVersions_P($$$)
+{
+    my ($A, $B, $Profile) = @_;
+    
+    if(defined $Profile->{"LetterReleases"})
+    { # 0.9.8k and 0.9.8
+        my $TA = getVersionType($A, $Profile);
+        my $TB = getVersionType($B, $Profile);
+        
+        if($TA eq $TB)
+        {
+            if(index($A, $B)==0) {
+                return 1;
+            }
+            elsif(index($B, $A)==0) {
+                return -1;
+            }
+        }
+    }
+    
+    return cmpVersions($A, $B);
+}
+
+sub skipVersion($$)
+{
+    my ($V, $Profile) = @_;
+    
+    if(defined $Profile->{"SkipVersions"})
+    {
+        my @Skip = @{$Profile->{"SkipVersions"}};
+        
+        foreach my $E (@Skip)
+        {
+            if($E=~s/\*/\.*/g)
+            { # pattern
+                if($V=~/\A$E\Z/) {
+                    return 1;
+                }
+            }
+            elsif($E eq $V) {
+                return 1;
+            }
+        }
+    }
+    
+    return 0;
+}
+
 sub naturalSequence(@)
 {
+    my $Profile = shift(@_);
+    
     my @Releases = ();
     my @Unstables = ();
     my @Previews = ();
     
-    foreach my $Version (sort {cmpVersions($a, $b)} @_)
+    foreach my $Version (sort {cmpVersions_P($a, $b, $Profile)} @_)
     {
-        my $Type = getVersionType($Version);
+        my $Type = getVersionType($Version, $Profile);
         
         if($Type eq "unknown"
         or $Version eq "current") {
+            next;
+        }
+        
+        if(skipVersion($Version, $Profile)) {
             next;
         }
         
@@ -271,7 +325,7 @@ sub naturalSequence(@)
     {
         if($LastRelease)
         {
-            if(cmpVersions($LastUnstable, $LastRelease)==1) {
+            if(cmpVersions_P($LastUnstable, $LastRelease, $Profile)==1) {
                 push(@NaturalSequence, $LastUnstable);
             }
         }
@@ -287,9 +341,18 @@ sub naturalSequence(@)
     return @NaturalSequence;
 }
 
-sub getVersionType($)
+sub getVersionType($$)
 {
-    my $Version = $_[0];
+    my ($Version, $Profile) = @_;
+    
+    if(defined $Profile->{"LetterReleases"})
+    {
+        if($Version=~/\A[\d\.\-]+[a-z]*\Z/i
+        and index($Version, "beta")==-1)
+        {
+            return "release";
+        }
+    }
     
     if($Version!~/[a-z]/i) {
         return "release";
