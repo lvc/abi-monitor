@@ -49,8 +49,6 @@ my $TOOL_VERSION = "1.4";
 my $DB_PATH = "Monitor.data";
 my $REPO = "src";
 my $INSTALLED = "installed";
-my $PUBLIC_SYMBOLS = "public_symbols";
-my $PUBLIC_TYPES = "public_types";
 my $BUILD_LOGS = "build_logs";
 my $TMP_DIR = tempdir(CLEANUP=>1);
 my $TMP_DIR_LOC = "Off";
@@ -490,8 +488,6 @@ sub getVersions_Local()
             {
                 printMsg("INFO", "Found $File");
                 
-                $NewVer{$V} = 1;
-                
                 # copy to local directory
                 # mkpath($To);
                 # if(copy($File, $To))
@@ -645,6 +641,7 @@ sub getPackage($$$)
     }
     
     $DB->{"Source"}{$V} = $To;
+    $NewVer{$V} = 1;
     
     return 1;
 }
@@ -1104,9 +1101,6 @@ sub createProfile($)
         $N_Info->{"ABIView"} = "Off";
         $N_Info->{"ABIDiff"} = "Off";
         
-        $N_Info->{"PublicSymbols"} = $DB->{"PublicSymbols"}{$V}; # Obsolete
-        $N_Info->{"PublicTypes"} = $DB->{"PublicTypes"}{$V}; # Obsolete
-        
         if(defined $Profile->{"Versions"} and defined $Profile->{"Versions"}{$V})
         {
             my $O_Info = $Profile->{"Versions"}{$V};
@@ -1123,7 +1117,7 @@ sub createProfile($)
         }
         
         my @VersionKeys = ("Number", "Installed", "Source", "Changelog", "HeadersDiff", "PkgDiff", "ABIView",
-        "ABIDiff", "PublicSymbols", "PublicTypes", "BuildShared", "Deleted");
+        "ABIDiff", "BuildShared", "Deleted");
         
         my $MaxLen_V = 13;
         
@@ -1204,7 +1198,7 @@ sub autoBuild($$)
     
     my ($CMake, $Autotools, $Scons) = (0, 0, 0);
     
-    my ($Configure, $Autogen, $Bootstrap) = (0, 0, 0);
+    my ($Configure, $Autogen, $Bootstrap, $Buildconf) = (0, 0, 0, 0);
     
     foreach my $File (sort @Files)
     {
@@ -1225,6 +1219,9 @@ sub autoBuild($$)
         elsif($File eq "bootstrap") {
             $Bootstrap = 1;
         }
+        elsif($File eq "buildconf") {
+            $Buildconf = 1;
+        }
         elsif($File eq "SConstruct") {
             $Scons = 1;
         }
@@ -1235,8 +1232,10 @@ sub autoBuild($$)
         if($Profile->{"BuildSystem"} eq "CMake") {
             $Autotools = 0;
         }
-        elsif($Profile->{"BuildSystem"} eq "Autotools") {
+        elsif($Profile->{"BuildSystem"} eq "Autotools")
+        {
             $CMake = 0;
+            $Autotools = 1;
         }
     }
     
@@ -1269,6 +1268,20 @@ sub autoBuild($$)
                 {
                     printMsg("ERROR", "failed to 'bootstrap'");
                     printMsg("ERROR", "see error log in '$LogDir_R/bootstrap'");
+                    return 0;
+                }
+            }
+            elsif($Buildconf)
+            {
+                my $Cmd_B = "sh buildconf";
+                $Cmd_B .= " >\"$LogDir/buildconf\" 2>&1";
+                
+                qx/$Cmd_B/;
+                
+                if(not -f "configure")
+                {
+                    printMsg("ERROR", "failed to 'buildconf'");
+                    printMsg("ERROR", "see error log in '$LogDir_R/buildconf'");
                     return 0;
                 }
             }
@@ -1717,26 +1730,6 @@ sub checkFiles()
             rmtree($Installed."/".$V);
         }
     }
-    
-    # Obsolete
-    my $Public_S = $PUBLIC_SYMBOLS."/".$TARGET_LIB;
-    foreach my $V (listDir($Public_S))
-    {
-        if(-f $Public_S."/".$V."/list")
-        {
-            $DB->{"PublicSymbols"}{$V} = $Public_S."/".$V."/list";
-        }
-    }
-    
-    # Obsolete
-    my $Public_T = $PUBLIC_TYPES."/".$TARGET_LIB;
-    foreach my $V (listDir($Public_T))
-    {
-        if(-f $Public_T."/".$V."/list")
-        {
-            $DB->{"PublicTypes"}{$V} = $Public_T."/".$V."/list";
-        }
-    }
 }
 
 sub checkDB()
@@ -1754,24 +1747,6 @@ sub checkDB()
         if(not -d $DB->{"Installed"}{$V})
         {
             delete($DB->{"Installed"}{$V});
-        }
-    }
-    
-    # Obsolete
-    foreach my $V (keys(%{$DB->{"PublicSymbols"}}))
-    {
-        if(not -f $DB->{"PublicSymbols"}{$V})
-        {
-            delete($DB->{"PublicSymbols"}{$V});
-        }
-    }
-    
-    # Obsolete
-    foreach my $V (keys(%{$DB->{"PublicTypes"}}))
-    {
-        if(not -f $DB->{"PublicTypes"}{$V})
-        {
-            delete($DB->{"PublicTypes"}{$V});
         }
     }
 }
