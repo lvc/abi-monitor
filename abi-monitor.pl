@@ -1174,14 +1174,23 @@ sub findChangelog($)
     return "None";
 }
 
-sub autoBuild($$)
+sub autoBuild($$$)
 {
-    my ($To, $LogDir) = @_;
+    my ($To, $LogDir, $V) = @_;
     
     my $LogDir_R = $LogDir;
     $LogDir_R=~s/\A$ORIG_DIR\///;
     
-    if(my $PreInstall = $Profile->{"PreInstall"})
+    my $PreInstall = $Profile->{"PreInstall"};
+    
+    if($V eq "current")
+    {
+        if(defined $Profile->{"CurrentPreInstall"}) {
+            $PreInstall = $Profile->{"CurrentPreInstall"};
+        }
+    }
+    
+    if($PreInstall)
     {
         $PreInstall=~s/{INSTALL_TO}/$To/g;
         my $Cmd_P = $PreInstall." >$LogDir/pre_install 2>&1";
@@ -1293,6 +1302,12 @@ sub autoBuild($$)
     }
     
     my $ConfigOptions = $Profile->{"Configure"};
+    if($V eq "current")
+    {
+        if(defined $Profile->{"CurrentConfigure"}) {
+            $ConfigOptions = $Profile->{"CurrentConfigure"};
+        }
+    }
     $ConfigOptions=~s/{INSTALL_TO}/$To/g;
     
     if($CMake)
@@ -1395,7 +1410,15 @@ sub autoBuild($$)
         }
     }
     
-    if(my $PostInstall = $Profile->{"PostInstall"})
+    my $PostInstall = $Profile->{"PostInstall"};
+    if($V eq "current")
+    {
+        if(defined $Profile->{"CurrentPostInstall"}) {
+            $PostInstall = $Profile->{"CurrentPostInstall"};
+        }
+    }
+    
+    if($PostInstall)
     {
         $PostInstall=~s/{INSTALL_TO}/$To/g;
         my $Cmd_P = $PostInstall." >$LogDir/post_install 2>&1";
@@ -1576,7 +1599,7 @@ sub buildPackage($$)
     }
     else
     {
-        if(autoBuild($InstallDir_A, $LogDir)) {
+        if(autoBuild($InstallDir_A, $LogDir, $V)) {
             $DB->{"Installed"}{$V} = $InstallDir;
         }
         else {
@@ -1597,9 +1620,13 @@ sub buildPackage($$)
         }
         
         foreach my $D ("share", "bin", "sbin",
-        "etc", "var", "opt", "libexec", "doc")
+        "etc", "var", "opt", "libexec", "doc",
+        "manual", "man", "logs", "icons",
+        "conf", "cgi-bin")
         {
-            rmtree($InstallDir."/".$D);
+            if(-d $InstallDir."/".$D) {
+                rmtree($InstallDir."/".$D);
+            }
         }
     }
     else
