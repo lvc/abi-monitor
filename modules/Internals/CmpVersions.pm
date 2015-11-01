@@ -240,6 +240,26 @@ sub cmpVersions_P($$$)
             }
         }
     }
+    elsif(defined $Profile->{"ExtendVersion"})
+    {
+        my $Extend = $Profile->{"ExtendVersion"};
+        my $AL = length($A);
+        my $BL = length($B);
+        
+        if($AL<$Extend)
+        {
+            foreach (1 .. $Extend-$AL) {
+                $A .= "0";
+            }
+        }
+        
+        if($BL<$Extend)
+        {
+            foreach (1 .. $Extend-$BL) {
+                $B .= "0";
+            }
+        }
+    }
     
     return cmpVersions($A, $B);
 }

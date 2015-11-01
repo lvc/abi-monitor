@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 ##################################################################
-# ABI Monitor 1.4
+# ABI Monitor 1.5
 # A tool to monitor new versions of a software library, build them
 # and create profile for ABI Tracker.
 #
@@ -45,7 +45,7 @@ use File::Basename qw(dirname basename);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
-my $TOOL_VERSION = "1.4";
+my $TOOL_VERSION = "1.5";
 my $DB_PATH = "Monitor.data";
 my $REPO = "src";
 my $INSTALLED = "installed";
@@ -305,7 +305,7 @@ sub readProfile($)
         }
         
         # scalars
-        while($Info=~s/\"(\w+)\"\s*:\s*([^,\[]+?)\s*(\,|\Z)//)
+        while($Info=~s/\"(\w+)\"\s*:\s*(.+?)\s*\,?\s*$//m)
         {
             my ($K, $V) = ($1, $2);
             
@@ -662,9 +662,9 @@ sub readPage($)
     }
     
     my $Cmd = "wget --no-check-certificate \"$Page\"";
-    #$Cmd .= " -U ''";
+    # $Cmd .= " -U ''";
     $Cmd .= " --no-remove-listing";
-    $Cmd .= " --quiet";
+    # $Cmd .= " --quiet";
     $Cmd .= " --connect-timeout=$CONNECT_TIMEOUT";
     $Cmd .= " --tries=$ACCESS_TRIES --output-document=\"$To\"";
     
@@ -977,7 +977,7 @@ sub createProfile($)
     }
     
     my @ProfileKeys = ("Name", "Title", "SourceUrl", "SourceUrlDepth", "SourceDir", "SkipUrl", "Git", "Svn", "Doc",
-    "Maintainer", "MaintainerUrl", "Configure", "BuildScript", "PreInstall", "PostInstall", "SkipSymbols", "SkipObjects");
+    "Maintainer", "MaintainerUrl", "BuildSystem", "Configure", "CurrentConfigure", "BuildScript", "PreInstall", "CurrentPreInstall", "PostInstall", "CurrentPostInstall", "SkipObjects", "SkipSymbols", "SkipTypes");
     my $MaxLen_P = 13;
     
     my %UnknownKeys = ();
@@ -1086,16 +1086,34 @@ sub createProfile($)
         $N_Info->{"Source"} = $DB->{"Source"}{$V};
         $N_Info->{"Changelog"} = $DB->{"Changelog"}{$V};
         if(not $N_Info->{"Changelog"})
-        {
-            if($V eq "current") {
-                $N_Info->{"Changelog"} = "On";
+        { # default
+            if(defined $Profile->{"Changelog"})
+            {
+                $N_Info->{"Changelog"} = $Profile->{"Changelog"};
             }
-            else {
-                $N_Info->{"Changelog"} = "Off";
+            else
+            {
+                if($V eq "current") {
+                    $N_Info->{"Changelog"} = "On";
+                }
+                else {
+                    $N_Info->{"Changelog"} = "Off";
+                }
             }
         }
-        $N_Info->{"PkgDiff"} = "Off";
-        $N_Info->{"HeadersDiff"} = "On";
+        if(defined $Profile->{"PkgDiff"}) {
+            $N_Info->{"PkgDiff"} = $Profile->{"PkgDiff"};
+        }
+        else {
+            $N_Info->{"PkgDiff"} = "Off";
+        }
+        
+        if(defined $Profile->{"HeadersDiff"}) {
+            $N_Info->{"HeadersDiff"} = $Profile->{"HeadersDiff"};
+        }
+        else {
+            $N_Info->{"HeadersDiff"} = "On";
+        }
         
         # Non-free high detailed analysis
         $N_Info->{"ABIView"} = "Off";
@@ -1192,7 +1210,7 @@ sub autoBuild($$$)
     
     if($PreInstall)
     {
-        $PreInstall=~s/{INSTALL_TO}/$To/g;
+        $PreInstall = addParams($PreInstall, $To, $V);
         my $Cmd_P = $PreInstall." >$LogDir/pre_install 2>&1";
         qx/$Cmd_P/; # execute
         if($?)
@@ -1308,7 +1326,7 @@ sub autoBuild($$$)
             $ConfigOptions = $Profile->{"CurrentConfigure"};
         }
     }
-    $ConfigOptions=~s/{INSTALL_TO}/$To/g;
+    $ConfigOptions = addParams($ConfigOptions, $To, $V);
     
     if($CMake)
     {
@@ -1420,7 +1438,7 @@ sub autoBuild($$$)
     
     if($PostInstall)
     {
-        $PostInstall=~s/{INSTALL_TO}/$To/g;
+        $PostInstall = addParams($PostInstall, $To, $V);
         my $Cmd_P = $PostInstall." >$LogDir/post_install 2>&1";
         qx/$Cmd_P/; # execute
         if($?)
@@ -1465,6 +1483,19 @@ sub autoBuild($$$)
     }
     
     return 1;
+}
+
+sub addParams($$$)
+{
+    my ($Cmd, $To, $V) = @_;
+    
+    $Cmd=~s/{INSTALL_TO}/$To/g;
+    $Cmd=~s/{VERSION}/$V/g;
+    
+    my $InstallRoot_A = $ORIG_DIR."/".$INSTALLED;
+    $Cmd=~s/{INSTALL_ROOT}/$InstallRoot_A/g;
+    
+    return $Cmd;
 }
 
 sub findObjects($)
@@ -1567,7 +1598,7 @@ sub buildPackage($$)
         chdir($Files[0]);
     }
     
-    if($V ne "current")
+    if($V ne "current" and not defined $Profile->{"Changelog"})
     {
         my $Found = findChangelog(".");
         
@@ -1618,14 +1649,17 @@ sub buildPackage($$)
         {
             buildShared($V);
         }
-        
-        foreach my $D ("share", "bin", "sbin",
-        "etc", "var", "opt", "libexec", "doc",
-        "manual", "man", "logs", "icons",
-        "conf", "cgi-bin")
+        if(not defined $Profile->{"ClearInstalled"}
+        or $Profile->{"ClearInstalled"} ne "Off")
         {
-            if(-d $InstallDir."/".$D) {
-                rmtree($InstallDir."/".$D);
+            foreach my $D ("share", "bin", "sbin",
+            "etc", "var", "opt", "libexec", "doc",
+            "manual", "man", "logs", "icons",
+            "conf", "cgi-bin")
+            {
+                if(-d $InstallDir."/".$D) {
+                    rmtree($InstallDir."/".$D);
+                }
             }
         }
     }
