@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 ##################################################################
-# ABI Monitor 1.5
+# ABI Monitor 1.6
 # A tool to monitor new versions of a software library, build them
 # and create profile for ABI Tracker.
 #
@@ -22,7 +22,6 @@
 #  G++
 #  Ctags (5.8 or newer)
 #
-#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License or the GNU Lesser
 # General Public License as published by the Free Software Foundation.
@@ -37,7 +36,7 @@
 # If not, see <http://www.gnu.org/licenses/>.
 ##################################################################
 use Getopt::Long;
-Getopt::Long::Configure ("posix_default", "no_ignore_case");
+Getopt::Long::Configure ("posix_default", "no_ignore_case", "permute");
 use File::Path qw(mkpath rmtree);
 use File::Copy qw(copy move);
 use File::Temp qw(tempdir);
@@ -45,7 +44,7 @@ use File::Basename qw(dirname basename);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
-my $TOOL_VERSION = "1.5";
+my $TOOL_VERSION = "1.6";
 my $DB_PATH = "Monitor.data";
 my $REPO = "src";
 my $INSTALLED = "installed";
@@ -1073,6 +1072,36 @@ sub createProfile($)
         }
         
         @Versions = @Merged;
+    }
+    
+    # Mark old unstable releases as "deleted"
+    if(not defined $Profile->{"KeepOldBeta"})
+    {
+        my $MaxBeta = undef;
+        my $MaxRelease = undef;
+        foreach my $V (reverse(@Versions))
+        {
+            if($V eq "current") {
+                next;
+            }
+            
+            if(getVersionType($V, $Profile) eq "release")
+            {
+                if(not defined $MaxRelease) {
+                    $MaxRelease = $V;
+                }
+            }
+            else
+            {
+                if(defined $MaxBeta or defined $MaxRelease) {
+                    $Profile->{"Versions"}{$V}{"Deleted"} = 1;
+                }
+                
+                if(not defined $MaxBeta) {
+                    $MaxBeta = $V;
+                }
+            }
+        }
     }
     
     foreach my $V (reverse(@Versions))
