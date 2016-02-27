@@ -1,10 +1,10 @@
 #!/usr/bin/perl
 ##################################################################
-# ABI Monitor 1.6
+# ABI Monitor 1.7
 # A tool to monitor new versions of a software library, build them
 # and create profile for ABI Tracker.
 #
-# Copyright (C) 2015 Andrey Ponomarenko's ABI Laboratory
+# Copyright (C) 2016 Andrey Ponomarenko's ABI Laboratory
 #
 # Written by Andrey Ponomarenko
 #
@@ -44,7 +44,7 @@ use File::Basename qw(dirname basename);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
-my $TOOL_VERSION = "1.6";
+my $TOOL_VERSION = "1.7";
 my $DB_PATH = "Monitor.data";
 my $REPO = "src";
 my $INSTALLED = "installed";
@@ -87,7 +87,7 @@ my %ERROR_CODE = (
 
 my $ShortUsage = "ABI Monitor $TOOL_VERSION
 A tool to monitor new versions of a software library
-Copyright (C) 2015 Andrey Ponomarenko's ABI Laboratory
+Copyright (C) 2016 Andrey Ponomarenko's ABI Laboratory
 License: GPL or LGPL
 
 Usage: $CmdName [options] [profile]
@@ -585,6 +585,42 @@ sub getVersions()
     }
 }
 
+sub getHighRelease()
+{
+    my @Vers = keys(%{$DB->{"Source"}});
+    @Vers = naturalSequence($Profile, @Vers);
+    @Vers = reverse(@Vers);
+    
+    foreach my $V (@Vers)
+    {
+        if(getVersionType($V, $Profile) eq "release")
+        {
+            return $V;
+        }
+    }
+    
+    return undef;
+}
+
+sub isOldMicro($)
+{
+    my $V = $_[0];
+    my $M = getMajor($V);
+    
+    foreach my $Ver (sort keys(%{$DB->{"Source"}}))
+    {
+        if(getMajor($Ver) eq $M)
+        {
+            if(cmpVersions_P($Ver, $V, $Profile)>=0)
+            {
+                return 1;
+            }
+        }
+    }
+    
+    return 0;
+}
+
 sub getPackage($$$)
 {
     my ($Link, $P, $V) = @_;
@@ -592,6 +628,25 @@ sub getPackage($$$)
     if(defined $DB->{"Source"}{$V})
     { # already downloaded
         return -1;
+    }
+    
+    if(getVersionType($V, $Profile) ne "release")
+    {
+        if(my $HighRelease = getHighRelease())
+        {
+            if(cmpVersions_P($V, $HighRelease, $Profile)==-1)
+            { # do not download old alfa/beta/pre releases
+                return -1;
+            }
+        }
+    }
+    
+    if(defined $Profile->{"LatestMicro"})
+    {
+        if(isOldMicro($V))
+        { # do not download old micro releases
+            return -1;
+        }
     }
     
     my $Dir = $REPO."/".$TARGET_LIB."/".$V;
@@ -708,7 +763,7 @@ sub getPackages(@)
         $Pkg = $Profile->{"Package"};
     }
     
-    foreach my $Link (sort @_)
+    foreach my $Link (sort {$b cmp $a} @_)
     {
         if($Link=~/\/\Z/) {
             next;
@@ -834,9 +889,9 @@ sub getLinks($)
             next;
         }
         
-        if(getSiteAddr($Link) ne getSiteAddr($Page)) {
-            next;
-        }
+        # if(getSiteAddr($Link) ne getSiteAddr($Page)) {
+        #     next;
+        # }
         
         if(not getSiteProtocol($Link)) {
             $Link = $SiteProtocol.$Link;
@@ -976,7 +1031,7 @@ sub createProfile($)
     }
     
     my @ProfileKeys = ("Name", "Title", "SourceUrl", "SourceUrlDepth", "SourceDir", "SkipUrl", "Git", "Svn", "Doc",
-    "Maintainer", "MaintainerUrl", "BuildSystem", "Configure", "CurrentConfigure", "BuildScript", "PreInstall", "CurrentPreInstall", "PostInstall", "CurrentPostInstall", "SkipObjects", "SkipSymbols", "SkipTypes");
+    "Maintainer", "MaintainerUrl", "BuildSystem", "Configure", "CurrentConfigure", "BuildScript", "PreInstall", "CurrentPreInstall", "PostInstall", "CurrentPostInstall", "SkipObjects", "SkipHeaders", "SkipSymbols", "SkipInternalSymbols", "SkipTypes", "SkipInternalTypes");
     my $MaxLen_P = 13;
     
     my %UnknownKeys = ();
@@ -1093,13 +1148,41 @@ sub createProfile($)
             }
             else
             {
-                if(defined $MaxBeta or defined $MaxRelease) {
-                    $Profile->{"Versions"}{$V}{"Deleted"} = 1;
+                if(defined $MaxBeta or defined $MaxRelease)
+                {
+                    if(not defined $Profile->{"Versions"}{$V}{"Deleted"})
+                    { # One can set Deleted to 0 in order to prevent deleting
+                        $Profile->{"Versions"}{$V}{"Deleted"} = 1;
+                    }
                 }
                 
                 if(not defined $MaxBeta) {
                     $MaxBeta = $V;
                 }
+            }
+        }
+    }
+    
+    if(defined $Profile->{"LatestMicro"})
+    {
+        my %MaxMicro = ();
+        foreach my $V (reverse(@Versions))
+        {
+            if($V eq "current") {
+                next;
+            }
+            
+            my $M = getMajor($V);
+            
+            if(defined $MaxMicro{$M})
+            {
+                if(not defined $Profile->{"Versions"}{$V}{"Deleted"})
+                { # One can set Deleted to 0 in order to prevent deleting
+                    $Profile->{"Versions"}{$V}{"Deleted"} = 1;
+                }
+            }
+            else {
+                $MaxMicro{$M} = $V;
             }
         }
     }
@@ -1478,6 +1561,20 @@ sub autoBuild($$$)
         }
     }
     
+    copyFiles($To);
+    
+    if(not listDir($To))
+    {
+        return 0;
+    }
+    
+    return 1;
+}
+
+sub copyFiles($)
+{
+    my $To = $_[0];
+    
     if(my $Dirs = $Profile->{"CopyHeaders"})
     {
         foreach my $D (@{$Dirs})
@@ -1492,26 +1589,50 @@ sub autoBuild($$$)
         }
     }
     
-    if(my $Dirs = $Profile->{"CopyObjects"})
+    foreach my $Tag ("CopyHeaders", "CopyObjects")
     {
-        foreach my $D (@{$Dirs})
+        if(not defined $Profile->{$Tag}) {
+            next;
+        }
+        
+        my $Dir = undef;
+        
+        if($Tag eq "CopyHeaders") {
+            $Dir = "include";
+        }
+        else {
+            $Dir = "lib";
+        }
+        
+        if(my $Elems = $Profile->{$Tag})
         {
-            foreach my $Obj (findObjects($D))
+            foreach my $D (@{$Elems})
             {
-                my $O_To = $To."/lib/".$Obj;
-                my $D_To = getDirname($O_To);
-                mkpath($D_To);
-                copy($Obj, $D_To);
+                my @Files = ();
+                
+                if(-d $D)
+                {
+                    if($Tag eq "CopyHeaders") {
+                        @Files = findHeaders($D);
+                    }
+                    else {
+                        @Files = findObjects($D);
+                    }
+                }
+                elsif(-f $D) {
+                    @Files = ($D);
+                }
+                
+                foreach my $F (@Files)
+                {
+                    my $O_To = $To."/".$Dir."/".$F;
+                    my $D_To = getDirname($O_To);
+                    mkpath($D_To);
+                    copy($F, $D_To);
+                }
             }
         }
     }
-    
-    if(not listDir($To))
-    {
-        return 0;
-    }
-    
-    return 1;
 }
 
 sub addParams($$$)
@@ -1531,7 +1652,12 @@ sub findObjects($)
 {
     my $Dir = $_[0];
     
-    return findFiles($Dir, "f", ".*\\.so[0-9.]*");
+    if($Profile->{"Mode"} eq "Kernel") {
+        return findFiles($Dir, "f", ".*\\.ko");
+    }
+    else {
+        return findFiles($Dir, "f", ".*\\.so[0-9.]*");
+    }
 }
 
 sub findHeaders($)
@@ -1645,6 +1771,8 @@ sub buildPackage($$)
         $Cmd_I .= " >\"$LogDir/build\" 2>&1";
         
         qx/$Cmd_I/; # execute
+        
+        copyFiles($InstallDir_A);
         
         if($? or not listDir($InstallDir_A))
         {

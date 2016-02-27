@@ -1,7 +1,7 @@
 ##################################################################
 # Module for ABI Monitor with basic functions
 #
-# Copyright (C) 2015 Andrey Ponomarenko's ABI Laboratory
+# Copyright (C) 2016 Andrey Ponomarenko's ABI Laboratory
 #
 # Written by Andrey Ponomarenko
 #
@@ -143,7 +143,11 @@ sub isHeader($)
 sub check_Cmd($)
 {
     my $Cmd = $_[0];
-    return "" if(not $Cmd);
+    return 0 if(not $Cmd);
+    
+    if(-x $Cmd) {
+        return 1;
+    }
     
     foreach my $Path (sort {length($a)<=>length($b)} split(/:/, $ENV{"PATH"}))
     {

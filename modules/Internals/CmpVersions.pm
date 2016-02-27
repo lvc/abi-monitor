@@ -1,7 +1,7 @@
 ##################################################################
 # Module for ABI Monitor to compare library versions
 #
-# Copyright (C) 2015 Andrey Ponomarenko's ABI Laboratory
+# Copyright (C) 2016 Andrey Ponomarenko's ABI Laboratory
 #
 # Written by Andrey Ponomarenko
 #
@@ -252,6 +252,10 @@ sub cmpVersions_P($$$)
             }
         }
     }
+    elsif(defined $Profile->{"StringReleases"})
+    { # compare as strings letter by letter
+        return ($A cmp $B);
+    }
     elsif(defined $Profile->{"ExtendVersion"})
     {
         my $Extend = $Profile->{"ExtendVersion"};
@@ -450,6 +454,21 @@ sub getVersionType($$)
         }
     }
     return "unknown";
+}
+
+sub getMajor($)
+{
+    my $V = $_[0];
+    
+    $V=~s/\-/./;
+    
+    my @P = split(/\./, $V);
+    
+    if($#P>1) {
+        pop(@P);
+    }
+    
+    return join(".", @P);
 }
 
 return 1;
