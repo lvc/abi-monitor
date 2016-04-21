@@ -15,7 +15,7 @@
 # REQUIREMENTS
 # ============
 #  Perl 5 (5.8 or newer)
-#  GNU Wget >= 1.12
+#  cURL
 #  CMake
 #  Automake
 #  GCC
@@ -54,13 +54,13 @@ my $TMP_DIR_LOC = "Off";
 my $ACCESS_TIMEOUT = 15;
 my $CONNECT_TIMEOUT = 5;
 my $ACCESS_TRIES = 2;
+my $USE_CURL = 1;
 my $PKG_EXT = "tar\\.bz2|tar\\.gz|tar\\.xz|tar\\.lzma|tar\\.lz|tar\\.Z|tbz2|tgz|tar|zip";
 
 # Internal modules
 my $MODULES_DIR = get_Modules();
 push(@INC, dirname($MODULES_DIR));
 
-my $CTAGS = "ctags";
 my $CMAKE = "cmake";
 my $GCC = "gcc";
 
@@ -418,11 +418,11 @@ sub getScmUpdateTime()
         
         if(defined $Profile->{"Git"})
         {
-            $Head = "$Source/.git/FETCH_HEAD";
+            $Head = "$Source/.git/refs/heads/master";
             
             if(not -f $Head)
             { # is not updated yet
-                $Head = "$Source/.git/HEAD";
+                $Head = "$Source/.git/FETCH_HEAD";
             }
             
             if(not -f $Head)
@@ -515,10 +515,21 @@ sub getVersions()
     
     printMsg("INFO", "Searching for new packages");
     
-    if(not check_Cmd("wget"))
+    if($USE_CURL)
     {
-        printMsg("ERROR", "can't find \"wget\"");
-        return;
+        if(not check_Cmd("curl"))
+        {
+            printMsg("ERROR", "can't find \"curl\"");
+            return;
+        }
+    }
+    else
+    {
+        if(not check_Cmd("wget"))
+        {
+            printMsg("ERROR", "can't find \"wget\"");
+            return;
+        }
     }
     
     my @Links = getLinks($SourceUrl);
@@ -665,7 +676,14 @@ sub getPackage($$$)
     my $Pid = fork();
     unless($Pid)
     { # child
-        my $Cmd = "wget --no-check-certificate \"$Link\" --connect-timeout=5 --tries=1 --output-document=\"$To\""; # -U ''
+        my $Cmd = "";
+        
+        if($USE_CURL) {
+            $Cmd = "curl -L \"$Link\" --connect-timeout 5 --retry 1 --output \"$To\"";
+        }
+        else {
+            $Cmd = "wget --no-check-certificate \"$Link\" --connect-timeout=5 --tries=1 --output-document=\"$To\""; # -U ''
+        }
         
         system($Cmd." >".$TMP_DIR."/wget_log 2>&1");
         writeFile($TMP_DIR."/wget_res", $?);
@@ -715,12 +733,23 @@ sub readPage($)
         $Page .= "/";
     }
     
-    my $Cmd = "wget --no-check-certificate \"$Page\"";
-    # $Cmd .= " -U ''";
-    $Cmd .= " --no-remove-listing";
-    # $Cmd .= " --quiet";
-    $Cmd .= " --connect-timeout=$CONNECT_TIMEOUT";
-    $Cmd .= " --tries=$ACCESS_TRIES --output-document=\"$To\"";
+    my $Cmd = "";
+    
+    if($USE_CURL)
+    {
+        $Cmd = "curl -L \"$Page\"";
+        $Cmd .= " --connect-timeout $CONNECT_TIMEOUT";
+        $Cmd .= " --retry $ACCESS_TRIES --output \"$To\"";
+    }
+    else
+    {
+        $Cmd = "wget --no-check-certificate \"$Page\"";
+        # $Cmd .= " -U ''";
+        $Cmd .= " --no-remove-listing";
+        # $Cmd .= " --quiet";
+        $Cmd .= " --connect-timeout=$CONNECT_TIMEOUT";
+        $Cmd .= " --tries=$ACCESS_TRIES --output-document=\"$To\"";
+    }
     
     my $Pid = fork();
     unless($Pid)
@@ -771,10 +800,14 @@ sub getPackages(@)
         
         if($Link=~/(\A|\/)(\Q$Pkg\E[_\-]*([^\/"'<>+%]+?)\.($PKG_EXT))([\/\?]|\Z)/i)
         {
-            my ($P, $V) = ($2, $3);
+            my ($P, $V, $E) = ($2, $3, $4);
             
-            if(defined $Res{$V}) {
-                next;
+            if(defined $Res{$V})
+            {
+                if($Res{$V}{"Ext"} ne "zip" or $E eq "zip")
+                {
+                    next;
+                }
             }
             
             if($V=~/mingw|msvc/i) {
@@ -797,6 +830,7 @@ sub getPackages(@)
             
             $Res{$V}{"Url"} = $Link;
             $Res{$V}{"Pkg"} = $P;
+            $Res{$V}{"Ext"} = $E;
         }
         elsif($Link=~/archive\/v?([\d\.\-\_]+([ab]\d*|rc\d*|))\.(tar\.gz)/i)
         { # github
@@ -804,6 +838,7 @@ sub getPackages(@)
             
             $Res{$V}{"Url"} = $Link;
             $Res{$V}{"Pkg"} = $Pkg."-".$V.".".$3;
+            $Res{$V}{"Ext"} = $3;
         }
     }
     
@@ -815,11 +850,16 @@ sub getPages($$)
     my ($Top, $Links) = @_;
     my @Res = ();
     
+    $Top=~s/\?.*\Z//g;
+    
     foreach my $Link (@{$Links})
     {
         if($Link!~/\/\Z/ and $Link!~/\A\/\d[\d\.\-]*\Z/)
         {
-            next;
+            if($Link!~/github\.com\/.+\?after\=/)
+            {
+                next;
+            }
         }
         
         if(index($Link, $Top)==-1)
@@ -881,7 +921,10 @@ sub getLinks($)
             next;
         }
         
-        $Link=~s/\?.+\Z//g;
+        if($Link!~/github\.com\/.*\?after\=/) {
+            $Link=~s/\?.+\Z//g;
+        }
+        
         $Link=~s/\%2D/-/g;
         $Link=~s/[\/]{2,}\Z/\//g;
         
@@ -972,6 +1015,14 @@ sub buildVersions()
                 $C_FLAGS .= " -fPIC";
                 $CXX_FLAGS .= " -fPIC";
             }
+        }
+    }
+    
+    if(defined $BuildNew)
+    {
+        if(not defined $DB->{"Installed"}{"current"})
+        { # NOTE: try to build current again
+            $NewVer{"current"} = 1;
         }
     }
     
@@ -1291,7 +1342,7 @@ sub findChangelog($)
 {
     my $Dir = $_[0];
     
-    foreach my $Name ("NEWS", "CHANGES", "RELEASE_NOTES", "ChangeLog", "Changelog",
+    foreach my $Name ("NEWS", "CHANGES", "CHANGES.txt", "RELEASE_NOTES", "ChangeLog", "Changelog",
     "RELEASE_NOTES.md", "RELEASE_NOTES.markdown")
     {
         if(-f $Dir."/".$Name
@@ -1519,9 +1570,16 @@ sub autoBuild($$$)
         return 0;
     }
     
+    my $MakeOptions = $Profile->{"Make"};
+    
     if($CMake or $Autotools)
     {
-        my $Cmd_M = "make >$LogDir/make 2>&1";
+        my $Cmd_M = "make";
+        if($MakeOptions) {
+            $Cmd_M .= " ".$MakeOptions;
+        }
+        $Cmd_M .= " >$LogDir/make 2>&1";
+        
         qx/$Cmd_M/; # execute
         if($?)
         {
@@ -1652,12 +1710,29 @@ sub findObjects($)
 {
     my $Dir = $_[0];
     
-    if($Profile->{"Mode"} eq "Kernel") {
-        return findFiles($Dir, "f", ".*\\.ko");
+    my @Files = ();
+    
+    if($Profile->{"Mode"} eq "Kernel")
+    {
+        @Files = findFiles($Dir, "f", ".*\\.ko");
+        @Files = (@Files, findFiles($Dir, "f", "", "vmlinux"));
     }
-    else {
-        return findFiles($Dir, "f", ".*\\.so[0-9.]*");
+    else
+    {
+        @Files = findFiles($Dir, "f", ".*\\.so\\..*");
+        @Files = (@Files, findFiles($Dir, "f", ".*\\.so"));
     }
+    
+    my @Res = ();
+    
+    foreach my $F (@Files)
+    {
+        if(-B $F) {
+            push(@Res, $F);
+        }
+    }
+    
+    return @Res;
 }
 
 sub findHeaders($)
@@ -1685,7 +1760,7 @@ sub buildPackage($$)
     {
         if(defined $DB->{"Installed"}{$V})
         {
-            if(not defined $NewVer{$V})
+            if($V ne "current" or not defined $NewVer{$V})
             {
                 return -1;
             }
@@ -1812,7 +1887,7 @@ sub buildPackage($$)
             foreach my $D ("share", "bin", "sbin",
             "etc", "var", "opt", "libexec", "doc",
             "manual", "man", "logs", "icons",
-            "conf", "cgi-bin")
+            "conf", "cgi-bin", "docs")
             {
                 if(-d $InstallDir."/".$D) {
                     rmtree($InstallDir."/".$D);

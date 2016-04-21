@@ -10,12 +10,11 @@ INSTALL:
 
 REQUIRES:
   Perl 5 (5.8 or newer)
-  GNU Wget
+  cURL
   CMake
   Automake
   GCC
   G++
-  Ctags
 
 USAGE:
   abi-monitor [options] [profile]

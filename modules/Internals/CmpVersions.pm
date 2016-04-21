@@ -400,7 +400,9 @@ sub getVersionType($$)
         }
     }
     
-    if($Version!~/[a-z]/i) {
+    if($Version!~/[a-z]/i
+    or $Version=~/\A[\d\.]+[\-\_]*r\d+\Z/i)
+    { # 1.5_r04
         return "release";
     }
     
