@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 ##################################################################
-# ABI Monitor 1.7
+# ABI Monitor 1.8
 # A tool to monitor new versions of a software library, build them
 # and create profile for ABI Tracker.
 #
@@ -20,7 +20,6 @@
 #  Automake
 #  GCC
 #  G++
-#  Ctags (5.8 or newer)
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License or the GNU Lesser
@@ -44,7 +43,7 @@ use File::Basename qw(dirname basename);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
-my $TOOL_VERSION = "1.7";
+my $TOOL_VERSION = "1.8";
 my $DB_PATH = "Monitor.data";
 my $REPO = "src";
 my $INSTALLED = "installed";
@@ -824,6 +823,11 @@ sub getPackages(@)
                 next;
             }
             
+            if(my $Release = checkReleasePattern($V, $Profile))
+            {
+                $V = $Release;
+            }
+            
             if(skipVersion($V, $Profile)) {
                 next;
             }
@@ -962,8 +966,17 @@ sub skipUrl($$)
     {
         foreach my $Url (@{$Profile->{"SkipUrl"}})
         {
-            if($Link=~/\Q$Url\E/) {
-                return 1;
+            if($Url=~/[\*\+\(\|\\]/)
+            { # pattern
+                if($Link=~/$Url/) {
+                    return 1;
+                }
+            }
+            else
+            {
+                if($Link=~/\Q$Url\E/) {
+                    return 1;
+                }
             }
         }
     }

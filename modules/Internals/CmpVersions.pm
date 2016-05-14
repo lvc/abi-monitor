@@ -290,7 +290,7 @@ sub skipVersion($$)
         
         foreach my $E (@Skip)
         {
-            if($E=~s/\*/\.*/g)
+            if($E=~/[\*\+\(\|\\]/)
             { # pattern
                 if($V=~/\A$E\Z/) {
                     return 1;
@@ -387,6 +387,21 @@ sub naturalSequence(@)
     return @NaturalSequence;
 }
 
+sub checkReleasePattern($$)
+{
+    my ($Version, $Profile) = @_;
+    
+    if(my $RPattern = $Profile->{"ReleasePattern"})
+    {
+        if($Version=~/$RPattern/i)
+        {
+            return $1;
+        }
+    }
+    
+    return undef;
+}
+
 sub getVersionType($$)
 {
     my ($Version, $Profile) = @_;
@@ -400,9 +415,15 @@ sub getVersionType($$)
         }
     }
     
+    if(checkReleasePattern($Version, $Profile)) {
+        return "release";
+    }
+    
     if($Version!~/[a-z]/i
-    or $Version=~/\A[\d\.]+[\-\_]*r\d+\Z/i)
+    or $Version=~/\A[\d\.]+[\-\_]*r\d+\Z/i
+    or $Version=~/\A[\d\.]+\.v\d+\Z/i)
     { # 1.5_r04
+      # 9.3.7.v20160115
         return "release";
     }
     
