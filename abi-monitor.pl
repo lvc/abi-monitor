@@ -67,7 +67,7 @@ my $C_FLAGS = "-g -Og -w -fpermissive";
 my $CXX_FLAGS = $C_FLAGS;
 
 my ($Help, $DumpVersion, $Get, $Build, $Rebuild, $OutputProfile,
-$TargetVersion, $LimitOps, $BuildShared, $BuildNew);
+$TargetVersion, $LimitOps, $BuildShared, $BuildNew, $Debug);
 
 my $CmdName = basename($0);
 my $ORIG_DIR = cwd();
@@ -111,7 +111,8 @@ GetOptions("h|help!" => \$Help,
   "v=s" => \$TargetVersion,
   "output=s" => \$OutputProfile,
   "build-shared!" => \$BuildShared,
-  "build-new!" => \$BuildNew
+  "build-new!" => \$BuildNew,
+  "debug!" => \$Debug
 ) or ERR_MESSAGE();
 
 sub ERR_MESSAGE()
@@ -177,6 +178,9 @@ GENERAL OPTIONS:
   -build-new
       Build newly found packages only. This option should
       be used with -get option.
+  
+  -debug
+      Enable debug messages.
 ";
 
 # Global
@@ -698,7 +702,7 @@ sub getPackage($$$)
     my $Log = readFile($TMP_DIR."/wget_log");
     my $R = readFile($TMP_DIR."/wget_res");
     
-    if($Log=~/\[text\/html\]/)
+    if($Log=~/\[text\/html\]/ or not -B $To)
     {
         rmtree($Dir);
         printMsg("ERROR", "\'$Link\' is not a package\n");
@@ -739,6 +743,7 @@ sub readPage($)
         $Cmd = "curl -L \"$Page\"";
         $Cmd .= " --connect-timeout $CONNECT_TIMEOUT";
         $Cmd .= " --retry $ACCESS_TRIES --output \"$To\"";
+        $Cmd .= " -w \"\%{url_effective}\\n\"";
     }
     else
     {
@@ -801,6 +806,9 @@ sub getPackages(@)
         {
             my ($P, $V, $E) = ($2, $3, $4);
             
+            $V=~s/\Av(\d)/$1/i; # v1.1
+            $V=~s/[\-\_](src|source|sources)\Z//i; # pkg-X.Y.Z-Source.tar.gz
+            
             if(defined $Res{$V})
             {
                 if($Res{$V}{"Ext"} ne "zip" or $E eq "zip")
@@ -816,8 +824,6 @@ sub getPackages(@)
             if($V=~/snapshot/i) {
                 next;
             }
-            
-            $V=~s/\Av(\d)/$1/i; # v1.1
             
             if(getVersionType($V, $Profile) eq "unknown") {
                 next;
@@ -871,6 +877,27 @@ sub getPages($$)
             next;
         }
         
+        if($Link=~/https:\/\/sourceforge\.net\/projects\/[^\/]+\/files\/[^\/]+\/([^\/]+)\/\Z/)
+        {
+            if(defined $DB->{"Source"}{$1})
+            {
+                if($Debug) {
+                    printMsg("INFO", "Skip: $Link");
+                }
+                next;
+            }
+        }
+        elsif($Link=~/\/($TARGET_LIB[\-_]*|)([\d\.\-\_v]+)\/\Z/i)
+        {
+            if(defined $DB->{"Source"}{$2})
+            {
+                if($Debug) {
+                    printMsg("INFO", "Skip: $Link");
+                }
+                next;
+            }
+        }
+        
         push(@Res, $Link);
     }
     
@@ -880,6 +907,11 @@ sub getPages($$)
 sub getLinks($)
 {
     my $Page = $_[0];
+    
+    if($Debug) {
+        printMsg("INFO", "Reading ".$Page);
+    }
+    
     my ($To, $Url) = readPage($Page);
     
     if(not $To) {
@@ -889,7 +921,7 @@ sub getLinks($)
     my $Content = readFile($To);
     unlink($To);
     
-    my (%Links1, %Links2, %Links3, %Links4) = ();
+    my (%Links1, %Links2, %Links3, %Links4, %Links5, %Links6) = ();
     
     my @Lines = split(/\n/, $Content);
     
@@ -907,10 +939,20 @@ sub getLinks($)
         while($Line=~s/["']([^"'<>\s]+\.($PKG_EXT))["']//i) {
             $Links4{linkSum($Url, $1)} = 1;
         }
+        if($Page=~/ftp/)
+        {
+            while($Line=~s/ftp\s+\w+\s+\w+\s+\w+\s+[^\s]+\s+([^\s]+\.($PKG_EXT))//i) {
+                $Links5{linkSum($Url, $1)} = 1;
+            }
+            while($Line=~s/\d+\s+\w+\s+\d+\s+\d+\s+([^\s]+\.($PKG_EXT))//i)
+            { # -rw-r--r-- 1 3003 65534 2016707 Nov 03 2001 pkg-1.0.tar.gz
+                $Links6{linkSum($Url, $1)} = 1;
+            }
+        }
     }
     
     my @Res = ();
-    my @AllLinks = (sort {$b cmp $a} keys(%Links1), sort {$b cmp $a} keys(%Links2), sort {$b cmp $a} keys(%Links3), sort {$b cmp $a} keys(%Links4));
+    my @AllLinks = (sort {$b cmp $a} keys(%Links1), sort {$b cmp $a} keys(%Links2), sort {$b cmp $a} keys(%Links3), sort {$b cmp $a} keys(%Links4), sort {$b cmp $a} keys(%Links5), sort {$b cmp $a} keys(%Links6));
     
     foreach (@AllLinks) {
         while($_=~s/\/[^\/]+\/\.\.\//\//g){};
@@ -944,9 +986,18 @@ sub getLinks($)
             $Link = $SiteProtocol.$Link;
         }
         
-        if($Link=~/http:\/\/sourceforge.net\/projects\/(\w+)\/files\/(.+)\/download\Z/)
-        { # fix for SF
-            $Link = "https://sourceforge.net/projects/$1/files/$2/download?use_mirror=autoselect";
+        if(index($Link, "sourceforge")!=-1)
+        {
+            if($Link=~/($PKG_EXT)\/(.+)\Z/)
+            {
+                if($2 ne "download") {
+                    next;
+                }
+            }
+            if($Link=~/(http[s]*):\/\/sourceforge.net\/projects\/(\w+)\/files\/(.+)\/download\Z/)
+            { # fix for SF
+                $Link = "$1://sourceforge.net/projects/$2/files/$3/download?use_mirror=autoselect";
+            }
         }
         
         $Link=~s/\%2b/\+/g;
@@ -966,6 +1017,10 @@ sub skipUrl($$)
     {
         foreach my $Url (@{$Profile->{"SkipUrl"}})
         {
+            if(not $Url) {
+                next;
+            }
+            
             if($Url=~/[\*\+\(\|\\]/)
             { # pattern
                 if($Link=~/$Url/) {
@@ -1956,6 +2011,12 @@ sub buildShared($)
         my $Object_S = getFilename($Object);
         $Object_S=~s/\.a\Z/.so/g;
         
+        if(-e $To."/".$Object_S)
+        {
+            printMsg("INFO", "shared object already exists");
+            return 1;
+        }
+        
         my $Cmd_B = $GCC." -shared -o \"$Object_S\" *.o";
         qx/$Cmd_B/;
         
@@ -2099,6 +2160,10 @@ sub scenario()
     {
         printMsg("INFO", $HelpMessage);
         exit(0);
+    }
+    
+    if(-d "archives_report") {
+        exitStatus("Error", "Can't execute inside the Java API tracker home directory");
     }
     
     my $Profile_Path = $ARGV[0];

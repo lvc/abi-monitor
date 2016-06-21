@@ -73,6 +73,25 @@ sub cmpVersions($$)
         }
     }
     
+    # version-release
+    # 0.12-20140410 vs 0.12.1-20160607
+    if($A=~/\A([^\-]+)\-([^\-]+)\Z/)
+    {
+        my ($AV, $AR) = ($1, $2);
+        if($B=~/\A([^\-]+)\-([^\-]+)\Z/)
+        {
+            my ($BV, $BR) = ($1, $2);
+            
+            my $VR = cmpVersions($AV, $BV);
+            
+            if($VR!=0) {
+                return $VR;
+            }
+            
+            return cmpVersions($AR, $BR);
+        }
+    }
+    
     $A=~s/(\d)([a-z])/$1.$2/ig;
     $B=~s/(\d)([a-z])/$1.$2/ig;
     
@@ -309,6 +328,14 @@ sub skipVersion($$)
             {
                 return 1;
             }
+        }
+    }
+    
+    if(my $Min = $Profile->{"MinimalVersion"})
+    {
+        if(cmpVersions_P($V, $Min, $Profile)==-1)
+        {
+            return 1;
         }
     }
     
