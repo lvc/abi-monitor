@@ -842,13 +842,14 @@ sub getPackages(@)
             $Res{$V}{"Pkg"} = $P;
             $Res{$V}{"Ext"} = $E;
         }
-        elsif($Link=~/archive\/v?([\d\.\-\_]+([ab]\d*|rc\d*|))\.(tar\.gz)/i)
+        elsif($Link=~/(archive|get)\/v?([\d\.\-\_]+([ab]\d*|alpha\d*|beta\d*|rc\d*|))\.(tar\.gz)/i)
         { # github
-            my $V = $1;
+          # bitbucket
+            my $V = $2;
             
             $Res{$V}{"Url"} = $Link;
-            $Res{$V}{"Pkg"} = $Pkg."-".$V.".".$3;
-            $Res{$V}{"Ext"} = $3;
+            $Res{$V}{"Pkg"} = $Pkg."-".$V.".".$4;
+            $Res{$V}{"Ext"} = $4;
         }
     }
     
