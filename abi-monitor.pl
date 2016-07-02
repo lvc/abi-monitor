@@ -1916,9 +1916,11 @@ sub buildPackage($$)
         
         qx/$Cmd_I/; # execute
         
+        my $Err = $?;
+        
         copyFiles($InstallDir_A);
         
-        if($? or not listDir($InstallDir_A))
+        if($Err or not listDir($InstallDir_A))
         {
             delete($DB->{"Installed"}{$V});
             
