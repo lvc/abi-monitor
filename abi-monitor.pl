@@ -16,6 +16,7 @@
 # ============
 #  Perl 5 (5.8 or newer)
 #  cURL
+#  wget
 #  CMake
 #  Automake
 #  GCC
@@ -541,6 +542,9 @@ sub getVersions()
     # One step into directory tree
     foreach my $Page (@Pages)
     {
+        if($Page eq $SourceUrl) {
+            next;
+        }
         foreach my $Link (getLinks($Page))
         {
             push(@Links, $Link);
@@ -738,8 +742,8 @@ sub readPage($)
     
     my $Cmd = "";
     
-    if($USE_CURL)
-    {
+    if($USE_CURL and index($Page, "ftp:")!=0)
+    { # TODO: how to list absolute paths in FTP directory using curl?
         $Cmd = "curl -L \"$Page\"";
         $Cmd .= " --connect-timeout $CONNECT_TIMEOUT";
         $Cmd .= " --retry $ACCESS_TRIES --output \"$To\"";
@@ -865,7 +869,7 @@ sub getPages($$)
     
     foreach my $Link (@{$Links})
     {
-        if($Link!~/\/\Z/ and $Link!~/\A\/\d[\d\.\-]*\Z/)
+        if($Link!~/\/\Z/ and $Link!~/\/v?\d[\d\.\-]*\Z/i)
         {
             if($Link!~/github\.com\/.+\?after\=/)
             {
@@ -888,9 +892,17 @@ sub getPages($$)
                 next;
             }
         }
-        elsif($Link=~/\/($TARGET_LIB[\-_]*|)([\d\.\-\_v]+)\/\Z/i)
+        elsif($Link=~/\/($TARGET_LIB[\-_]*|)v?([\d\.\-\_]+)[\/]*\Z/i)
         {
-            if(defined $DB->{"Source"}{$2})
+            my $V = $2;
+            if(defined $DB->{"Source"}{$V})
+            {
+                if($Debug) {
+                    printMsg("INFO", "Skip: $Link");
+                }
+                next;
+            }
+            elsif(skipVersion($V, $Profile))
             {
                 if($Debug) {
                     printMsg("INFO", "Skip: $Link");
@@ -922,7 +934,7 @@ sub getLinks($)
     my $Content = readFile($To);
     unlink($To);
     
-    my (%Links1, %Links2, %Links3, %Links4, %Links5, %Links6) = ();
+    my (%Links1, %Links2, %Links3, %Links4) = ();
     
     my @Lines = split(/\n/, $Content);
     
@@ -940,20 +952,19 @@ sub getLinks($)
         while($Line=~s/["']([^"'<>\s]+\.($PKG_EXT))["']//i) {
             $Links4{linkSum($Url, $1)} = 1;
         }
-        if($Page=~/ftp/)
-        {
-            while($Line=~s/ftp\s+\w+\s+\w+\s+\w+\s+[^\s]+\s+([^\s]+\.($PKG_EXT))//i) {
-                $Links5{linkSum($Url, $1)} = 1;
-            }
-            while($Line=~s/\d+\s+\w+\s+\d+\s+\d+\s+([^\s]+\.($PKG_EXT))//i)
-            { # -rw-r--r-- 1 3003 65534 2016707 Nov 03 2001 pkg-1.0.tar.gz
-                $Links6{linkSum($Url, $1)} = 1;
-            }
+    }
+    
+    foreach my $U (keys(%Links4))
+    {
+        my $F = getFilename($U);
+        
+        if(grep {getFilename($_) eq $F} keys(%Links1)) {
+            delete($Links4{$U});
         }
     }
     
     my @Res = ();
-    my @AllLinks = (sort {$b cmp $a} keys(%Links1), sort {$b cmp $a} keys(%Links2), sort {$b cmp $a} keys(%Links3), sort {$b cmp $a} keys(%Links4), sort {$b cmp $a} keys(%Links5), sort {$b cmp $a} keys(%Links6));
+    my @AllLinks = (sort {$b cmp $a} keys(%Links1), sort {$b cmp $a} keys(%Links2), sort {$b cmp $a} keys(%Links3), sort {$b cmp $a} keys(%Links4));
     
     foreach (@AllLinks) {
         while($_=~s/\/[^\/]+\/\.\.\//\//g){};
@@ -1895,6 +1906,10 @@ sub buildPackage($$)
     if($#Files==0 and -d $Files[0])
     { # one step deeper
         chdir($Files[0]);
+    }
+    
+    if(my $CustomDir = $Profile->{"BuildDir"}) {
+        chdir($CustomDir);
     }
     
     if($V ne "current" and not defined $Profile->{"Changelog"})

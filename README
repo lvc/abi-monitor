@@ -11,6 +11,7 @@ INSTALL:
 REQUIRES:
   Perl 5 (5.8 or newer)
   cURL
+  wget
   CMake
   Automake
   GCC
