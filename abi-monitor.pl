@@ -537,43 +537,31 @@ sub getVersions()
     }
     
     my @Links = getLinks($SourceUrl);
-    my @Pages = getPages($SourceUrl, \@Links);
     
-    # One step into directory tree
-    foreach my $Page (@Pages)
-    {
-        if($Page eq $SourceUrl) {
-            next;
-        }
-        foreach my $Link (getLinks($Page))
-        {
-            push(@Links, $Link);
-        }
-    }
-    
+    my $Depth = 2;
     if(defined $Profile->{"SourceUrlDepth"})
     { # More steps into directory tree
-        my $Depth = $Profile->{"SourceUrlDepth"};
+        $Depth = $Profile->{"SourceUrlDepth"};
+    }
+    
+    if($Depth>=2)
+    {
+        my %Checked = ();
+        $Checked{$SourceUrl} = 1;
         
-        if($Depth>2)
+        foreach my $D (1 .. $Depth - 1)
         {
-            my %Checked = map {$_=>1} @Pages;
-            
-            foreach my $D (1 .. $Depth - 2)
+            my @Pages = getPages($SourceUrl, \@Links);
+            foreach my $Page (@Pages)
             {
-                my @MorePages = getPages($SourceUrl, \@Links);
-                foreach my $Page (@MorePages)
+                if(not defined $Checked{$Page})
                 {
-                    if(not defined $Checked{$Page})
+                    $Checked{$Page} = 1;
+                    foreach my $Link (getLinks($Page))
                     {
-                        $Checked{$Page} = 1;
-                        foreach my $Link (getLinks($Page))
-                        {
-                            push(@Links, $Link);
-                        }
+                        push(@Links, $Link);
                     }
                 }
-                
             }
         }
     }
@@ -620,14 +608,14 @@ sub getHighRelease()
     return undef;
 }
 
-sub isOldMicro($)
+sub isOldMicro($$)
 {
-    my $V = $_[0];
-    my $M = getMajor($V);
+    my ($V, $L) = @_;
+    my $M = getMajor($V, $L);
     
     foreach my $Ver (sort keys(%{$DB->{"Source"}}))
     {
-        if(getMajor($Ver) eq $M)
+        if(getMajor($Ver, $L) eq $M)
         {
             if(cmpVersions_P($Ver, $V, $Profile)>=0)
             {
@@ -661,8 +649,16 @@ sub getPackage($$$)
     
     if(defined $Profile->{"LatestMicro"})
     {
-        if(isOldMicro($V))
+        if(isOldMicro($V, 2))
         { # do not download old micro releases
+            return -1;
+        }
+    }
+    
+    if(defined $Profile->{"LatestNano"})
+    {
+        if(isOldMicro($V, 3))
+        { # do not download old nano releases
             return -1;
         }
     }
@@ -1303,7 +1299,7 @@ sub createProfile($)
                 next;
             }
             
-            my $M = getMajor($V);
+            my $M = getMajor($V, 2);
             
             if(defined $MaxMicro{$M})
             {
@@ -1314,6 +1310,30 @@ sub createProfile($)
             }
             else {
                 $MaxMicro{$M} = $V;
+            }
+        }
+    }
+    
+    if(defined $Profile->{"LatestNano"})
+    {
+        my %MaxNano = ();
+        foreach my $V (reverse(@Versions))
+        {
+            if($V eq "current") {
+                next;
+            }
+            
+            my $M = getMajor($V, 3);
+            
+            if(defined $MaxNano{$M})
+            {
+                if(not defined $Profile->{"Versions"}{$V}{"Deleted"})
+                { # One can set Deleted to 0 in order to prevent deleting
+                    $Profile->{"Versions"}{$V}{"Deleted"} = 1;
+                }
+            }
+            else {
+                $MaxNano{$M} = $V;
             }
         }
     }
@@ -1368,6 +1388,12 @@ sub createProfile($)
             
             foreach my $K (sort keys(%{$O_Info}))
             {
+                # if($K eq "PublicSymbols"
+                # or $K eq "PublicTypes")
+                # { # obsolete
+                #     next;
+                # }
+                
                 if($K ne "Pos")
                 {
                     if(defined $O_Info->{$K}) {
@@ -1872,6 +1898,7 @@ sub buildPackage($$)
     mkpath($InstallDir);
     
     my $InstallDir_A = abs_path($InstallDir);
+    my $InstallRoot_A = abs_path($INSTALLED);
     
     my $BuildDir = $TMP_DIR."/build/";
     mkpath($BuildDir);
@@ -1908,10 +1935,6 @@ sub buildPackage($$)
         chdir($Files[0]);
     }
     
-    if(my $CustomDir = $Profile->{"BuildDir"}) {
-        chdir($CustomDir);
-    }
-    
     if($V ne "current" and not defined $Profile->{"Changelog"})
     {
         my $Found = findChangelog(".");
@@ -1924,9 +1947,13 @@ sub buildPackage($$)
         }
     }
     
+    if(my $CustomDir = $Profile->{"BuildDir"}) {
+        chdir($CustomDir);
+    }
+    
     if(defined $BuildScript)
     {
-        my $Cmd_I = "INSTALL_TO=\"$InstallDir_A\" sh \"".$BuildScript."\"";
+        my $Cmd_I = "INSTALL_TO=\"$InstallDir_A\" INSTALL_ROOT=\"$InstallRoot_A\" sh \"".$BuildScript."\"";
         $Cmd_I .= " >\"$LogDir/build\" 2>&1";
         
         qx/$Cmd_I/; # execute
@@ -1973,7 +2000,8 @@ sub buildPackage($$)
             foreach my $D ("share", "bin", "sbin",
             "etc", "var", "opt", "libexec", "doc",
             "manual", "man", "logs", "icons",
-            "conf", "cgi-bin", "docs")
+            "conf", "cgi-bin", "docs", "lib/systemd",
+            "lib/udev", "lib/cmake")
             {
                 if(-d $InstallDir."/".$D) {
                     rmtree($InstallDir."/".$D);
@@ -2008,23 +2036,8 @@ sub buildShared($)
     
     foreach my $Object (@Objects)
     {
-        my $CDir = $TMP_DIR."/convert";
-        mkpath($CDir);
-        
         my $Object_A = abs_path($Object);
         my $To = getDirname($Object);
-        
-        chdir($CDir);
-        
-        my $Cmd_E = "ar -x \"$Object_A\"";
-        qx/$Cmd_E/;
-        
-        if($?)
-        {
-            print STDERR "ERROR: failed to extract static object(s)\n";
-            chdir($ORIG_DIR);
-            return 0;
-        }
         
         my $Object_S = getFilename($Object);
         $Object_S=~s/\.a\Z/.so/g;
@@ -2035,7 +2048,8 @@ sub buildShared($)
             return 1;
         }
         
-        my $Cmd_B = $GCC." -shared -o \"$Object_S\" *.o";
+        chdir($To);
+        my $Cmd_B = $GCC." -nostdlib -shared -o \"$Object_S\" -Wl,--whole-archive \"$Object_A\"";
         qx/$Cmd_B/;
         
         if($?)
@@ -2046,9 +2060,7 @@ sub buildShared($)
         }
         
         chdir($ORIG_DIR);
-        move($CDir."/".$Object_S, $To);
         print "Created \'$To/$Object_S\'\n";
-        rmtree($CDir);
     }
 }
 
