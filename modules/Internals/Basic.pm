@@ -64,6 +64,20 @@ sub listFiles($)
     return @Files;
 }
 
+sub listPaths($)
+{
+    my $Path = $_[0];
+    return () if(not $Path);
+    
+    my @Paths = ();
+    
+    foreach my $F (listDir($Path)) {
+        push(@Paths, $Path."/".$F);
+    }
+    
+    return @Paths;
+}
+
 sub getFilename($)
 { # much faster than basename() from File::Basename module
     if($_[0] and $_[0]=~/([^\/\\]+)[\/\\]*\Z/) {

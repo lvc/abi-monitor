@@ -510,7 +510,7 @@ sub getMajor($$)
 {
     my ($V, $L) = @_;
     
-    $V=~s/\-/./;
+    $V=~s/[\-_]/./g;
     
     my @P = split(/\./, $V);
     

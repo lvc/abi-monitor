@@ -802,54 +802,56 @@ sub getPackages(@)
             next;
         }
         
+        my ($P, $V, $E) = ();
+        
         if($Link=~/(\A|\/)(\Q$Pkg\E[_\-]*([^\/"'<>+%]+?)\.($PKG_EXT))([\/\?]|\Z)/i)
         {
-            my ($P, $V, $E) = ($2, $3, $4);
-            
-            $V=~s/\Av(\d)/$1/i; # v1.1
-            $V=~s/[\-\_](src|source|sources)\Z//i; # pkg-X.Y.Z-Source.tar.gz
-            
-            if(defined $Res{$V})
-            {
-                if($Res{$V}{"Ext"} ne "zip" or $E eq "zip")
-                {
-                    next;
-                }
-            }
-            
-            if($V=~/mingw|msvc/i) {
-                next;
-            }
-            
-            if($V=~/snapshot/i) {
-                next;
-            }
-            
-            if(getVersionType($V, $Profile) eq "unknown") {
-                next;
-            }
-            
-            if(my $Release = checkReleasePattern($V, $Profile))
-            {
-                $V = $Release;
-            }
-            
-            if(skipVersion($V, $Profile)) {
-                next;
-            }
-            
-            $Res{$V}{"Url"} = $Link;
-            $Res{$V}{"Pkg"} = $P;
-            $Res{$V}{"Ext"} = $E;
+            ($P, $V, $E) = ($2, $3, $4);
         }
         elsif($Link=~/(archive|get)\/v?([\d\.\-\_]+([ab]\d*|alpha\d*|beta\d*|rc\d*|))\.(tar\.gz)/i)
         { # github
           # bitbucket
-            my $V = $2;
-            
+            ($V, $E) = ($2, $4);
+            $P = $Pkg."-".$V.".".$E;
+        }
+        
+        $V=~s/\Av(\d)/$1/i; # v1.1
+        $V=~s/[\-\_](src|source|sources)\Z//i; # pkg-X.Y.Z-Source.tar.gz
+        
+        if(defined $Res{$V})
+        {
+            if($Res{$V}{"Ext"} ne "zip" or $E eq "zip")
+            {
+                next;
+            }
+        }
+        
+        if($V=~/mingw|msvc/i) {
+            next;
+        }
+        
+        if($V=~/snapshot/i) {
+            next;
+        }
+        
+        if(getVersionType($V, $Profile) eq "unknown") {
+            next;
+        }
+        
+        if(my $Release = checkReleasePattern($V, $Profile))
+        {
+            $V = $Release;
+        }
+        
+        if(skipVersion($V, $Profile)) {
+            next;
+        }
+        
+        if($P)
+        {
             $Res{$V}{"Url"} = $Link;
-            $Res{$V}{"Pkg"} = $Pkg."-".$V.".".$4;
-            $Res{$V}{"Ext"} = $4;
+            $Res{$V}{"Pkg"} = $P;
+            $Res{$V}{"Ext"} = $E;
         }
     }
     
@@ -1449,7 +1451,7 @@ sub findChangelog($)
     my $Dir = $_[0];
     
     foreach my $Name ("NEWS", "CHANGES", "CHANGES.txt", "RELEASE_NOTES", "ChangeLog", "Changelog",
-    "RELEASE_NOTES.md", "RELEASE_NOTES.markdown")
+    "RELEASE_NOTES.md", "RELEASE_NOTES.markdown", "NEWS.md")
     {
         if(-f $Dir."/".$Name
         and -s $Dir."/".$Name)
@@ -1492,7 +1494,7 @@ sub autoBuild($$$)
     
     my @Files = listDir(".");
     
-    my ($CMake, $Autotools, $Scons) = (0, 0, 0);
+    my ($CMake, $Autotools, $Scons, $Waf) = (0, 0, 0, 0);
     
     my ($Configure, $Autogen, $Bootstrap, $Buildconf) = (0, 0, 0, 0);
     
@@ -1521,6 +1523,9 @@ sub autoBuild($$$)
         elsif($File eq "SConstruct") {
             $Scons = 1;
         }
+        elsif($File eq "waf") {
+            $Waf = 1;
+        }
     }
     
     if(defined $Profile->{"BuildSystem"})
@@ -1541,7 +1546,7 @@ sub autoBuild($$$)
         { # try to generate configure script
             if($Autogen)
             {
-                my $Cmd_A = "sh autogen.sh";
+                my $Cmd_A = "NOCONFIGURE=1 NO_CONFIGURE=1 sh autogen.sh --no-configure";
                 $Cmd_A .= " >\"$LogDir/autogen\" 2>&1";
                 
                 qx/$Cmd_A/;
@@ -1670,6 +1675,24 @@ sub autoBuild($$$)
             return 0;
         }
     }
+    elsif($Waf)
+    {
+        my $Cmd_C = "./waf configure --prefix=\"$To\" --debug";
+        
+        if($ConfigOptions) {
+            $Cmd_C .= " ".$ConfigOptions;
+        }
+        
+        $Cmd_C .= " >\"$LogDir/configure\" 2>&1";
+        
+        qx/$Cmd_C/; # execute
+        if($?)
+        {
+            printMsg("ERROR", "failed to './waf configure'");
+            printMsg("ERROR", "see error log in '$LogDir_R/configure'");
+            return 0;
+        }
+    }
     else
     {
         printMsg("ERROR", "unknown build system, please set \"BuildScript\" in the profile");
@@ -1703,6 +1726,29 @@ sub autoBuild($$$)
             return 0;
         }
     }
+    elsif($Waf)
+    {
+        my $Cmd_M = "./waf build";
+        
+        $Cmd_M .= " >$LogDir/build 2>&1";
+        
+        qx/$Cmd_M/; # execute
+        if($?)
+        {
+            printMsg("ERROR", "failed to './waf build'");
+            printMsg("ERROR", "see error log in '$LogDir_R/build'");
+            return 0;
+        }
+        
+        my $Cmd_I = "./waf install >$LogDir/install 2>&1";
+        qx/$Cmd_I/; # execute
+        if($?)
+        {
+            printMsg("ERROR", "failed to './waf install'");
+            printMsg("ERROR", "see error log in '$LogDir_R/install'");
+            return 0;
+        }
+    }
     
     my $PostInstall = $Profile->{"PostInstall"};
     if($V eq "current")
@@ -1710,6 +1756,10 @@ sub autoBuild($$$)
         if(defined $Profile->{"CurrentPostInstall"}) {
             $PostInstall = $Profile->{"CurrentPostInstall"};
         }
+    }
+    
+    if($CMake) {
+        chdir("..");
     }
     
     if($PostInstall)
@@ -1738,20 +1788,6 @@ sub autoBuild($$$)
 sub copyFiles($)
 {
     my $To = $_[0];
-    
-    if(my $Dirs = $Profile->{"CopyHeaders"})
-    {
-        foreach my $D (@{$Dirs})
-        {
-            foreach my $H (findHeaders($D))
-            {
-                my $H_To = $To."/include/".$H;
-                my $D_To = getDirname($H_To);
-                mkpath($D_To);
-                copy($H, $D_To);
-            }
-        }
-    }
     
     foreach my $Tag ("CopyHeaders", "CopyObjects")
     {
@@ -1994,6 +2030,7 @@ sub buildPackage($$)
         {
             buildShared($V);
         }
+        
         if(not defined $Profile->{"ClearInstalled"}
         or $Profile->{"ClearInstalled"} ne "Off")
         {
@@ -2001,10 +2038,42 @@ sub buildPackage($$)
             "etc", "var", "opt", "libexec", "doc",
             "manual", "man", "logs", "icons",
             "conf", "cgi-bin", "docs", "lib/systemd",
-            "lib/udev", "lib/cmake")
+            "lib/udev", "lib/cmake", "systemd", "udev",
+            "lib/girepository-1.0", "lib/python2.7",
+            "tmp", "info", "lib/sysctl.d", "lib64/cmake")
             {
                 if(-d $InstallDir."/".$D) {
                     rmtree($InstallDir."/".$D);
+                }
+            }
+            
+            my @Fs = listPaths($InstallDir."/lib");
+            my @Fs64 = listPaths($InstallDir."/lib64");
+            my $Shared = undef;
+            
+            foreach my $F (@Fs, @Fs64)
+            {
+                if($F=~/\.so(\.|\Z)/)
+                {
+                    $Shared = 1;
+                    last;
+                }
+            }
+            
+            foreach my $F (@Fs, @Fs64)
+            {
+                if(-f $F)
+                {
+                    if($F=~/\.(la|jar|o)\Z/) {
+                        unlink($F)
+                    }
+                    
+                    if(defined $Shared)
+                    {
+                        if($F=~/\.a\Z/) {
+                            unlink($F)
+                        }
+                    }
                 }
             }
         }
