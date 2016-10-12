@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 ##################################################################
-# ABI Monitor 1.9
+# ABI Monitor 1.10
 # A tool to monitor new versions of a software library, build them
 # and create profile for ABI Tracker.
 #
@@ -14,7 +14,7 @@
 #
 # REQUIREMENTS
 # ============
-#  Perl 5 (5.8 or newer)
+#  Perl 5
 #  cURL
 #  wget
 #  CMake
@@ -44,7 +44,7 @@ use File::Basename qw(dirname basename);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
-my $TOOL_VERSION = "1.9";
+my $TOOL_VERSION = "1.10";
 my $DB_PATH = "Monitor.data";
 my $REPO = "src";
 my $INSTALLED = "installed";
