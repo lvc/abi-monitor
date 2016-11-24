@@ -816,7 +816,7 @@ sub getPackages(@)
         }
         
         $V=~s/\Av(\d)/$1/i; # v1.1
-        $V=~s/[\-\_](src|source|sources)\Z//i; # pkg-X.Y.Z-Source.tar.gz
+        $V=~s/[\-\_\.](src|source|sources)\Z//i; # pkg-X.Y.Z-Source.tar.gz
         
         if(defined $Res{$V})
         {
