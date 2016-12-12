@@ -299,9 +299,16 @@ sub cmpVersions_P($$$)
     return cmpVersions($A, $B);
 }
 
-sub skipVersion($$)
+sub skipVersion(@)
 {
-    my ($V, $Profile) = @_;
+    my $V = shift(@_);
+    my $Profile = shift(@_);
+    
+    my $MinCheck = 1;
+    
+    if(@_) {
+        $MinCheck = shift(@_);
+    }
     
     if(defined $Profile->{"SkipVersions"})
     {
@@ -331,11 +338,14 @@ sub skipVersion($$)
         }
     }
     
-    if(my $Min = $Profile->{"MinimalVersion"})
+    if($MinCheck)
     {
-        if(cmpVersions_P($V, $Min, $Profile)==-1)
+        if(my $Min = $Profile->{"MinimalVersion"})
         {
-            return 1;
+            if(cmpVersions_P($V, $Min, $Profile)==-1)
+            {
+                return 1;
+            }
         }
     }
     
@@ -518,6 +528,10 @@ sub getMajor($$)
         return join(".", splice(@P, 0, $L));
     }
     return $V;
+}
+
+sub getVDepth($) {
+    return $_[0]=~tr!\.!!;
 }
 
 return 1;

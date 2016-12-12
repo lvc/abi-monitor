@@ -335,7 +335,7 @@ sub getCurrent()
     
     if($Git)
     {
-        if(not check_Cmd("git"))
+        if(not checkCmd("git"))
         {
             printMsg("ERROR", "can't find \"git\"");
             return;
@@ -343,7 +343,7 @@ sub getCurrent()
     }
     elsif($Svn)
     {
-        if(not check_Cmd("svn"))
+        if(not checkCmd("svn"))
         {
             printMsg("ERROR", "can't find \"svn\"");
             return;
@@ -521,7 +521,7 @@ sub getVersions()
     
     if($USE_CURL)
     {
-        if(not check_Cmd("curl"))
+        if(not checkCmd("curl"))
         {
             printMsg("ERROR", "can't find \"curl\"");
             return;
@@ -529,7 +529,7 @@ sub getVersions()
     }
     else
     {
-        if(not check_Cmd("wget"))
+        if(not checkCmd("wget"))
         {
             printMsg("ERROR", "can't find \"wget\"");
             return;
@@ -847,6 +847,13 @@ sub getPackages(@)
             next;
         }
         
+        if(defined $TargetVersion)
+        {
+            if($TargetVersion ne $V) {
+                next;
+            }
+        }
+        
         if($P)
         {
             $Res{$V}{"Url"} = $Link;
@@ -900,12 +907,25 @@ sub getPages($$)
                 }
                 next;
             }
-            elsif(skipVersion($V, $Profile))
+            elsif(skipVersion($V, $Profile, 0))
             {
                 if($Debug) {
                     printMsg("INFO", "Skip: $Link");
                 }
                 next;
+            }
+            elsif(my $Min = $Profile->{"MinimalVersion"})
+            {
+                if(getVDepth($V)>=getVDepth($Min))
+                {
+                    if(cmpVersions_P($V, $Min, $Profile)==-1)
+                    {
+                        if($Debug) {
+                            printMsg("INFO", "Skip: $Link");
+                        }
+                        next;
+                    }
+                }
             }
         }
         
@@ -1084,7 +1104,7 @@ sub buildVersions()
         return;
     }
     
-    if(check_Cmd($GCC))
+    if(checkCmd($GCC))
     {
         if(my $Machine = qx/$GCC -dumpmachine/)
         {
@@ -1604,7 +1624,7 @@ sub autoBuild($$$)
     
     if($CMake)
     {
-        if(not check_Cmd($CMAKE))
+        if(not checkCmd($CMAKE))
         {
             printMsg("ERROR", "can't find \"$CMAKE\"");
             return;
@@ -2097,7 +2117,7 @@ sub buildShared($)
         return 0;
     }
     
-    if(not check_Cmd($GCC)) {
+    if(not checkCmd($GCC)) {
         return 0;
     }
     
