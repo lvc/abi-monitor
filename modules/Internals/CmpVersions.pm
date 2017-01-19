@@ -1,7 +1,7 @@
 ##################################################################
 # Module for ABI Monitor to compare library versions
 #
-# Copyright (C) 2016 Andrey Ponomarenko's ABI Laboratory
+# Copyright (C) 2017 Andrey Ponomarenko's ABI Laboratory
 #
 # Written by Andrey Ponomarenko
 #
@@ -327,7 +327,8 @@ sub skipVersion(@)
             }
         }
     }
-    elsif(defined $Profile->{"SkipOdd"})
+    
+    if(defined $Profile->{"SkipOdd"})
     {
         if($V=~/\A\d+\.(\d+)/)
         {

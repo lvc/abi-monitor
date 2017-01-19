@@ -4,7 +4,7 @@
 # A tool to monitor new versions of a software library, build them
 # and create profile for ABI Tracker.
 #
-# Copyright (C) 2016 Andrey Ponomarenko's ABI Laboratory
+# Copyright (C) 2017 Andrey Ponomarenko's ABI Laboratory
 #
 # Written by Andrey Ponomarenko
 #
@@ -87,7 +87,7 @@ my %ERROR_CODE = (
 
 my $ShortUsage = "ABI Monitor $TOOL_VERSION
 A tool to monitor new versions of a software library
-Copyright (C) 2016 Andrey Ponomarenko's ABI Laboratory
+Copyright (C) 2017 Andrey Ponomarenko's ABI Laboratory
 License: GPL or LGPL
 
 Usage: $CmdName [options] [profile]
@@ -676,6 +676,10 @@ sub getPackage($$$)
     
     printMsg("INFO", "Downloading package \'$P\'");
     
+    if($Debug) {
+        printMsg("INFO", "Link: \'$Link\'");
+    }
+    
     my $Pid = fork();
     unless($Pid)
     { # child
@@ -1001,6 +1005,7 @@ sub getLinks($)
             $Link=~s/\?.+\Z//g;
         }
         
+        $Link=~s/\%2B/+/g;
         $Link=~s/\%2D/-/g;
         $Link=~s/[\/]{2,}\Z/\//g;
         
@@ -1018,9 +1023,9 @@ sub getLinks($)
         
         if(index($Link, "sourceforge")!=-1)
         {
-            if($Link=~/($PKG_EXT)\/(.+)\Z/)
+            if($Link=~/($PKG_EXT)(\/.+|)\Z/)
             {
-                if($2 ne "download") {
+                if($2 ne "/download") {
                     next;
                 }
             }
@@ -1147,6 +1152,11 @@ sub buildVersions()
             }
         }
         
+        if(defined $Profile->{"Versions"} and defined $Profile->{"Versions"}{$V}
+        and defined $Profile->{"Versions"}{$V}{"Deleted"}) {
+            next;
+        }
+        
         my $R = buildPackage($DB->{"Source"}{$V}, $V);
         
         if($R>0) {
@@ -1226,6 +1236,13 @@ sub createProfile($)
     
     my @Versions = keys(%{$DB->{"Installed"}});
     @Versions = naturalSequence($Profile, @Versions);
+    
+    if(defined $Profile->{"Versions"})
+    {
+        if(not keys(%{$Profile->{"Versions"}})) {
+            $Profile->{"Versions"} = undef;
+        }
+    }
     
     if(defined $Profile->{"Versions"})
     { # save order of versions in the profile if manually edited
@@ -1528,7 +1545,8 @@ sub autoBuild($$$)
             $Autotools = 1;
             $Configure = 1;
         }
-        elsif($File eq "configure.ac") {
+        elsif($File eq "configure.ac"
+        or $File eq "configure.in") {
             $Autotools = 1;
         }
         elsif($File eq "autogen.sh") {
@@ -1613,14 +1631,31 @@ sub autoBuild($$$)
         }
     }
     
-    my $ConfigOptions = $Profile->{"Configure"};
-    if($V eq "current")
+    my $ConfigureKey = "Configure";
+    if($V eq "current" and defined $Profile->{"CurrentConfigure"}) {
+        $ConfigureKey = "CurrentConfigure";
+    }
+    else
     {
-        if(defined $Profile->{"CurrentConfigure"}) {
-            $ConfigOptions = $Profile->{"CurrentConfigure"};
+        if($CMake)
+        {
+            if(defined $Profile->{"CMakeConfigure"}) {
+                $ConfigureKey = "CMakeConfigure";
+            }
+        }
+        elsif($Autotools)
+        {
+            if(defined $Profile->{"AutotoolsConfigure"}) {
+                $ConfigureKey = "AutotoolsConfigure";
+            }
         }
     }
-    $ConfigOptions = addParams($ConfigOptions, $To, $V);
+    
+    my $ConfigOptions = $Profile->{$ConfigureKey};
+    
+    if($ConfigOptions) {
+        $ConfigOptions = addParams($ConfigOptions, $To, $V);
+    }
     
     if($CMake)
     {
@@ -1653,6 +1688,7 @@ sub autoBuild($$$)
     }
     elsif($Autotools)
     {
+        my $ConfigLog = "$LogDir/configure";
         my $Cmd_C = "./configure --enable-shared";
         $Cmd_C .= " --prefix=\"$To\"";
         $Cmd_C .= " CFLAGS=\"$C_FLAGS\" CXXFLAGS=\"$CXX_FLAGS\"";
@@ -1661,7 +1697,8 @@ sub autoBuild($$$)
             $Cmd_C .= " ".$ConfigOptions;
         }
         
-        $Cmd_C .= " >\"$LogDir/configure\" 2>&1";
+        writeFile($ConfigLog, $Cmd_C."\n\n");
+        $Cmd_C .= " >>\"$ConfigLog\" 2>&1";
         
         qx/$Cmd_C/; # execute
         if($?)
