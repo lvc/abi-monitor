@@ -106,6 +106,7 @@ GetOptions("h|help!" => \$Help,
   "dumpversion!" => \$DumpVersion,
 # general options
   "get!" => \$Get,
+  "get-old!" => \$GetOld,
   "build!" => \$Build,
   "rebuild!" => \$Rebuild,
   "limit=s" => \$LimitOps,
@@ -508,6 +509,10 @@ sub getVersions()
 {
     my $SourceUrl = $Profile->{"SourceUrl"};
     
+    if($GetOld) {
+        $SourceUrl = $Profile->{"OldSourceUrl"};
+    }
+    
     if(not $SourceUrl)
     {
         if(not defined $Profile->{"SourceDir"})
@@ -517,7 +522,12 @@ sub getVersions()
         return;
     }
     
-    printMsg("INFO", "Searching for new packages");
+    if($GetOld) {
+        printMsg("INFO", "Searching for old source packages");
+    }
+    else {
+        printMsg("INFO", "Searching for new packages");
+    }
     
     if($USE_CURL)
     {
@@ -539,9 +549,18 @@ sub getVersions()
     my @Links = getLinks($SourceUrl);
     
     my $Depth = 2;
+    
     if(defined $Profile->{"SourceUrlDepth"})
     { # More steps into directory tree
         $Depth = $Profile->{"SourceUrlDepth"};
+    }
+    
+    if($GetOld)
+    {
+        if(defined $Profile->{"OldSourceUrlDepth"})
+        { # More steps into directory tree
+            $Depth = $Profile->{"OldSourceUrlDepth"};
+        }
     }
     
     if($Depth>=2)
@@ -808,7 +827,7 @@ sub getPackages(@)
         
         my ($P, $V, $E) = ();
         
-        if($Link=~/(\A|\/)(\Q$Pkg\E[_\-]*([^\/"'<>+%]+?)\.($PKG_EXT))([\/\?]|\Z)/i)
+        if($Link=~/(\A|[\/\=])(\Q$Pkg\E[_\-]*([^\/"'<>+%]+?)\.($PKG_EXT))([\/\?]|\Z)/i)
         {
             ($P, $V, $E) = ($2, $3, $4);
         }
@@ -875,6 +894,7 @@ sub getPages($$)
     my @Res = ();
     
     $Top=~s/\?.*\Z//g;
+    $Top=~s&\A\w+://&//&; # do not match protocol
     
     foreach my $Link (@{$Links})
     {
@@ -1001,7 +1021,8 @@ sub getLinks($)
             next;
         }
         
-        if($Link!~/github\.com\/.*\?after\=/) {
+        if($Link!~/github\.com\/.*\?after\=/
+        and $Link!~/\?.*\.($PKG_EXT)/) {
             $Link=~s/\?.+\Z//g;
         }
         
@@ -1189,7 +1210,7 @@ sub createProfile($)
         return;
     }
     
-    my @ProfileKeys = ("Name", "Title", "SourceUrl", "SourceUrlDepth", "SourceDir", "SkipUrl", "Git", "Svn", "Doc",
+    my @ProfileKeys = ("Name", "Title", "SourceUrl", "SourceUrlDepth", "OldSourceUrl", "OldSourceUrlDepth", "SourceDir", "SkipUrl", "Git", "Svn", "Doc",
     "Maintainer", "MaintainerUrl", "BuildSystem", "Configure", "CurrentConfigure", "BuildScript", "PreInstall", "CurrentPreInstall", "PostInstall", "CurrentPostInstall", "SkipObjects", "SkipHeaders", "SkipSymbols", "SkipInternalSymbols", "SkipTypes", "SkipInternalTypes");
     my $MaxLen_P = 13;
     
@@ -1657,6 +1678,12 @@ sub autoBuild($$$)
         $ConfigOptions = addParams($ConfigOptions, $To, $V);
     }
     
+    my $ConfigGlobalVars = $Profile->{"ConfigureGlobal"};
+    
+    if($ConfigGlobalVars) {
+        $ConfigGlobalVars = addParams($ConfigGlobalVars, $To, $V);
+    }
+    
     if($CMake)
     {
         if(not checkCmd($CMAKE))
@@ -1674,6 +1701,10 @@ sub autoBuild($$$)
         
         if($ConfigOptions) {
             $Cmd_C .= " ".$ConfigOptions;
+        }
+        
+        if($ConfigGlobalVars) {
+            $Cmd_C = $ConfigGlobalVars." ".$Cmd_C;
         }
         
         $Cmd_C .= " >\"$LogDir/cmake\" 2>&1";
@@ -1697,6 +1728,10 @@ sub autoBuild($$$)
             $Cmd_C .= " ".$ConfigOptions;
         }
         
+        if($ConfigGlobalVars) {
+            $Cmd_C = $ConfigGlobalVars." ".$Cmd_C;
+        }
+        
         writeFile($ConfigLog, $Cmd_C."\n\n");
         $Cmd_C .= " >>\"$ConfigLog\" 2>&1";
         
@@ -1714,6 +1749,10 @@ sub autoBuild($$$)
         
         if($ConfigOptions) {
             $Cmd_I .= " ".$ConfigOptions;
+        }
+        
+        if($ConfigGlobalVars) {
+            $Cmd_I = $ConfigGlobalVars." ".$Cmd_I;
         }
         
         $Cmd_I .= " install";
@@ -1740,6 +1779,10 @@ sub autoBuild($$$)
             $Cmd_C .= " ".$ConfigOptions;
         }
         
+        if($ConfigGlobalVars) {
+            $Cmd_C = $ConfigGlobalVars." ".$Cmd_C;
+        }
+        
         $Cmd_C .= " >\"$LogDir/configure\" 2>&1";
         
         qx/$Cmd_C/; # execute
@@ -1757,12 +1800,19 @@ sub autoBuild($$$)
     }
     
     my $MakeOptions = $Profile->{"Make"};
+    $MakeOptions = addParams($MakeOptions, $To, $V);
+    
+    my $MakeGlobalVars = $Profile->{"MakeGlobal"};
+    $MakeGlobalVars = addParams($MakeGlobalVars, $To, $V);
     
     if($CMake or $Autotools)
     {
         my $Cmd_M = "make";
         if($MakeOptions) {
             $Cmd_M .= " ".$MakeOptions;
+        }
+        if($MakeGlobalVars) {
+            $Cmd_M = $MakeGlobalVars." ".$Cmd_M;
         }
         $Cmd_M .= " >$LogDir/make 2>&1";
         
@@ -1833,6 +1883,13 @@ sub autoBuild($$$)
     }
     
     copyFiles($To);
+    
+    foreach my $D ("lib", "lib64", "include")
+    { # clear install tree
+        if(not listDir($To."/".$D)) {
+            rmtree($To."/".$D);
+        }
+    }
     
     if(not listDir($To))
     {
@@ -2046,6 +2103,11 @@ sub buildPackage($$)
     
     if(defined $BuildScript)
     {
+        foreach my $D ("lib", "lib64", "include")
+        { # prepare install tree
+            mkpath($InstallDir_A."/".$D);
+        }
+        
         my $Cmd_I = "INSTALL_TO=\"$InstallDir_A\" INSTALL_ROOT=\"$InstallRoot_A\" sh \"".$BuildScript."\"";
         $Cmd_I .= " >\"$LogDir/build\" 2>&1";
         
@@ -2093,13 +2155,32 @@ sub buildPackage($$)
         {
             foreach my $D ("share", "bin", "sbin",
             "etc", "var", "opt", "libexec", "doc",
-            "manual", "man", "logs", "icons",
-            "conf", "cgi-bin", "docs", "lib/systemd",
-            "lib/udev", "lib/cmake", "systemd", "udev",
-            "lib/girepository-1.0", "lib/python2.7",
-            "tmp", "info", "lib/sysctl.d", "lib64/cmake")
+            "manual", "man", "logs", "icons", "conf",
+            "cgi-bin", "docs", "systemd", "udev",
+            "tmp", "info", "mkspecs")
             {
                 if(-d $InstallDir."/".$D) {
+                    rmtree($InstallDir."/".$D);
+                }
+            }
+            
+            foreach my $D ("systemd", "udev", "cmake",
+            "girepository-1.0", "python2.7", "sysctl.d",
+            "qml", "libexec")
+            {
+                if(-d $InstallDir."/lib/".$D) {
+                    rmtree($InstallDir."/lib/".$D);
+                }
+                if(-d $InstallDir."/lib64/".$D) {
+                    rmtree($InstallDir."/lib64/".$D);
+                }
+            }
+            
+            foreach my $D ("lib", "lib64", "include")
+            {
+                if(-d $InstallDir."/".$D
+                and not listDir($InstallDir."/".$D))
+                { # remove empty
                     rmtree($InstallDir."/".$D);
                 }
             }
@@ -2132,6 +2213,13 @@ sub buildPackage($$)
                         }
                     }
                 }
+            }
+            
+            if(not listDir($InstallDir))
+            { # empty after cleaning
+                delete($DB->{"Installed"}{$V});
+                printMsg("ERROR", "failed to build (empty tree)");
+                rmtree($InstallDir);
             }
         }
     }
@@ -2357,6 +2445,10 @@ sub scenario()
     
     checkDB();
     checkFiles();
+    
+    if($GetOld) {
+        getVersions();
+    }
     
     if($Get)
     {

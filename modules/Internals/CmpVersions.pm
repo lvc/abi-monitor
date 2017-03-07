@@ -316,7 +316,7 @@ sub skipVersion(@)
         
         foreach my $E (@Skip)
         {
-            if($E=~/[\*\+\(\|\\]/)
+            if($E=~/[\*\+\[\(\|\\]/)
             { # pattern
                 if($V=~/\A$E\Z/) {
                     return 1;
