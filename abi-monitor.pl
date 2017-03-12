@@ -4,7 +4,7 @@
 # A tool to monitor new versions of a software library, build them
 # and create profile for ABI Tracker.
 #
-# Copyright (C) 2017 Andrey Ponomarenko's ABI Laboratory
+# Copyright (C) 2015-2017 Andrey Ponomarenko's ABI Laboratory
 #
 # Written by Andrey Ponomarenko
 #
@@ -68,7 +68,7 @@ my $C_FLAGS = "-g -Og -w -fpermissive";
 my $CXX_FLAGS = $C_FLAGS;
 
 my ($Help, $DumpVersion, $Get, $Build, $Rebuild, $OutputProfile,
-$TargetVersion, $LimitOps, $BuildShared, $BuildNew, $Debug);
+$TargetVersion, $LimitOps, $BuildShared, $BuildNew, $Debug, $GetOld);
 
 my $CmdName = basename($0);
 my $ORIG_DIR = cwd();
@@ -911,9 +911,12 @@ sub getPages($$)
             next;
         }
         
-        if($Link=~/https:\/\/sourceforge\.net\/projects\/[^\/]+\/files\/[^\/]+\/([^\/]+)\/\Z/)
+        my $PLink = $Link;
+        $PLink=~s/\%20/ /gi;
+        
+        if($PLink=~/https:\/\/sourceforge\.net\/projects\/[^\/]+\/files\/[^\/]+\/($TARGET_LIB[\-_ ]*|)([^\/]+)\/\Z/i)
         {
-            if(defined $DB->{"Source"}{$1})
+            if(skipOldLink($2))
             {
                 if($Debug) {
                     printMsg("INFO", "Skip: $Link");
@@ -921,35 +924,14 @@ sub getPages($$)
                 next;
             }
         }
-        elsif($Link=~/\/($TARGET_LIB[\-_]*|)v?([\d\.\-\_]+)[\/]*\Z/i)
+        elsif($PLink=~/\/($TARGET_LIB[\-_ ]*|)v?([\d\.\-\_]+)[\/]*\Z/i)
         {
-            my $V = $2;
-            if(defined $DB->{"Source"}{$V})
+            if(skipOldLink($2))
             {
                 if($Debug) {
                     printMsg("INFO", "Skip: $Link");
                 }
                 next;
-            }
-            elsif(skipVersion($V, $Profile, 0))
-            {
-                if($Debug) {
-                    printMsg("INFO", "Skip: $Link");
-                }
-                next;
-            }
-            elsif(my $Min = $Profile->{"MinimalVersion"})
-            {
-                if(getVDepth($V)>=getVDepth($Min))
-                {
-                    if(cmpVersions_P($V, $Min, $Profile)==-1)
-                    {
-                        if($Debug) {
-                            printMsg("INFO", "Skip: $Link");
-                        }
-                        next;
-                    }
-                }
             }
         }
         
@@ -957,6 +939,29 @@ sub getPages($$)
     }
     
     return @Res;
+}
+
+sub skipOldLink($)
+{
+    my $V = $_[0];
+    
+    if(defined $DB->{"Source"}{$V}) {
+        return 1;
+    }
+    elsif(skipVersion($V, $Profile, 0)) {
+        return 1;
+    }
+    elsif(my $Min = $Profile->{"MinimalVersion"})
+    {
+        if(getVDepth($V)>=getVDepth($Min))
+        {
+            if(cmpVersions_P($V, $Min, $Profile)==-1) {
+                return 1;
+            }
+        }
+    }
+    
+    return 0;
 }
 
 sub getLinks($)
@@ -1026,8 +1031,8 @@ sub getLinks($)
             $Link=~s/\?.+\Z//g;
         }
         
-        $Link=~s/\%2B/+/g;
-        $Link=~s/\%2D/-/g;
+        $Link=~s/\%2B/+/gi;
+        $Link=~s/\%2D/-/gi;
         $Link=~s/[\/]{2,}\Z/\//g;
         
         if($Link=~/\A(\Q$Page\E|\Q$Url\E|\Q$SiteAddr\E)[\/]*\Z/) {
@@ -1056,7 +1061,6 @@ sub getLinks($)
             }
         }
         
-        $Link=~s/\%2b/\+/g;
         $Link=~s/\:21\//\//;
         
         push(@Res, $Link);
@@ -1509,7 +1513,7 @@ sub findChangelog($)
     my $Dir = $_[0];
     
     foreach my $Name ("NEWS", "CHANGES", "CHANGES.txt", "RELEASE_NOTES", "ChangeLog", "Changelog",
-    "RELEASE_NOTES.md", "RELEASE_NOTES.markdown", "NEWS.md")
+    "RELEASE_NOTES.md", "CHANGELOG.md", "RELEASE_NOTES.markdown", "NEWS.md")
     {
         if(-f $Dir."/".$Name
         and -s $Dir."/".$Name)
@@ -2079,11 +2083,19 @@ sub buildPackage($$)
     }
     
     chdir($BuildDir);
-    my @Files = listDir(".");
-    if($#Files==0 and -d $Files[0])
-    { # one step deeper
-        chdir($Files[0]);
+    
+    while(1)
+    {
+        my @Files = listDir(".");
+        if($#Files==0 and -d $Files[0])
+        { # one step deeper
+            chdir($Files[0]);
+        }
+        else {
+            last;
+        }
     }
+    
     
     if($V ne "current" and not defined $Profile->{"Changelog"})
     {
@@ -2101,13 +2113,13 @@ sub buildPackage($$)
         chdir($CustomDir);
     }
     
+    foreach my $D ("lib", "lib64", "include")
+    { # prepare install tree
+        mkpath($InstallDir_A."/".$D);
+    }
+    
     if(defined $BuildScript)
     {
-        foreach my $D ("lib", "lib64", "include")
-        { # prepare install tree
-            mkpath($InstallDir_A."/".$D);
-        }
-        
         my $Cmd_I = "INSTALL_TO=\"$InstallDir_A\" INSTALL_ROOT=\"$InstallRoot_A\" sh \"".$BuildScript."\"";
         $Cmd_I .= " >\"$LogDir/build\" 2>&1";
         
@@ -2157,7 +2169,7 @@ sub buildPackage($$)
             "etc", "var", "opt", "libexec", "doc",
             "manual", "man", "logs", "icons", "conf",
             "cgi-bin", "docs", "systemd", "udev",
-            "tmp", "info", "mkspecs")
+            "tmp", "info", "mkspecs", "gir")
             {
                 if(-d $InstallDir."/".$D) {
                     rmtree($InstallDir."/".$D);
