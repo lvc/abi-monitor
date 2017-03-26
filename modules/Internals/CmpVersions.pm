@@ -446,10 +446,17 @@ sub getVersionType($$)
     
     if(defined $Profile->{"LetterReleases"})
     {
-        if($Version=~/\A[\d\.\-]+[a-z]*\Z/i
+        if($Version=~/\A[\d\.\-]+[a-z]{0,2}\Z/i
         and index($Version, "beta")==-1)
         {
             return "release";
+        }
+    }
+    
+    if(defined $Profile->{"NumericBeta"})
+    {
+        if($Version=~/\A\d+\.\d+\.9\d+(|\.\d+)\Z/i) {
+            return "beta";
         }
     }
     

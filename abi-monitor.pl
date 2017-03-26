@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 ##################################################################
-# ABI Monitor 1.10
+# ABI Monitor 1.11
 # A tool to monitor new versions of a software library, build them
 # and create profile for ABI Tracker.
 #
@@ -44,7 +44,7 @@ use File::Basename qw(dirname basename);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
-my $TOOL_VERSION = "1.10";
+my $TOOL_VERSION = "1.11";
 my $DB_PATH = "Monitor.data";
 my $REPO = "src";
 my $INSTALLED = "installed";
@@ -55,7 +55,7 @@ my $ACCESS_TIMEOUT = 15;
 my $CONNECT_TIMEOUT = 5;
 my $ACCESS_TRIES = 2;
 my $USE_CURL = 1;
-my $PKG_EXT = "tar\\.bz2|tar\\.gz|tar\\.xz|tar\\.lzma|tar\\.lz|tar\\.Z|tbz2|tgz|tar|zip";
+my $PKG_EXT = "tar\\.bz2|tar\\.gz|tar\\.xz|tar\\.lzma|tar\\.lz|tar\\.Z|tbz2|tgz|zip";
 
 # Internal modules
 my $MODULES_DIR = get_Modules();
@@ -186,6 +186,7 @@ GENERAL OPTIONS:
 ";
 
 # Global
+my $Profile_Path;
 my $Profile;
 my $DB;
 my $TARGET_LIB;
@@ -819,7 +820,7 @@ sub getPackages(@)
         $Pkg = $Profile->{"Package"};
     }
     
-    foreach my $Link (sort {$b cmp $a} @_)
+    foreach my $Link (@_)
     {
         if($Link=~/\/\Z/) {
             next;
@@ -831,14 +832,25 @@ sub getPackages(@)
         {
             ($P, $V, $E) = ($2, $3, $4);
         }
-        elsif($Link=~/(archive|get)\/v?([\d\.\-\_]+([ab]\d*|alpha\d*|beta\d*|rc\d*|))\.(tar\.gz)/i)
+        elsif($Link=~/(archive|get)\/v?([\d\.\-\_]+([ab]\d*|alpha\d*|beta\d*|rc\d*|stable|))(|\-src|\-source)\.(tar\.gz)/i)
         { # github
           # bitbucket
-            ($V, $E) = ($2, $4);
+            ($V, $E) = ($2, $5);
+        }
+        elsif($Link=~/\/archive\.($PKG_EXT)\?ref=(.+)\Z/i)
+        { # gitlab
+            ($V, $E) = ($2, $1);
+        }
+        
+        if(not $V or not $E) {
+            next;
+        }
+        
+        if(not $P) {
             $P = $Pkg."-".$V.".".$E;
         }
         
-        $V=~s/\Av(\d)/$1/i; # v1.1
+        $V=~s/\A(v|version)(|_)(\d)/$3/i; # v1.1, VERSION_1.22
         $V=~s/[\-\_\.](src|source|sources)\Z//i; # pkg-X.Y.Z-Source.tar.gz
         
         if(defined $Res{$V})
@@ -914,19 +926,19 @@ sub getPages($$)
         my $PLink = $Link;
         $PLink=~s/\%20/ /gi;
         
-        if($PLink=~/https:\/\/sourceforge\.net\/projects\/[^\/]+\/files\/[^\/]+\/($TARGET_LIB[\-_ ]*|)([^\/]+)\/\Z/i)
-        {
-            if(skipOldLink($2))
-            {
-                if($Debug) {
-                    printMsg("INFO", "Skip: $Link");
-                }
-                next;
-            }
+        my $DirVer = undef;
+        
+        if($PLink=~/https:\/\/sourceforge\.net\/projects\/[^\/]+\/files\/[^\/]+\/($TARGET_LIB[\-_ ]*|)([^\/]+?)\/\Z/i) {
+            $DirVer = $2;
         }
-        elsif($PLink=~/\/($TARGET_LIB[\-_ ]*|)v?([\d\.\-\_]+)[\/]*\Z/i)
+        elsif($PLink=~/\/($TARGET_LIB[\-_ ]*|)v?([\d\.\-\_]+)[\/]*\Z/i) {
+            $DirVer = $2;
+        }
+        
+        if($DirVer)
         {
-            if(skipOldLink($2))
+            $DirVer=~s/[ _-](Src|Source|Sources)\Z//i;
+            if(skipOldLink($DirVer))
             {
                 if($Debug) {
                     printMsg("INFO", "Skip: $Link");
@@ -1010,8 +1022,12 @@ sub getLinks($)
         }
     }
     
-    my @Res = ();
-    my @AllLinks = (sort {$b cmp $a} keys(%Links1), sort {$b cmp $a} keys(%Links2), sort {$b cmp $a} keys(%Links3), sort {$b cmp $a} keys(%Links4));
+    my @L1 = sort {length($a)<=>length($b)} sort {$b cmp $a} keys(%Links1);
+    my @L2 = sort {length($a)<=>length($b)} sort {$b cmp $a} keys(%Links2);
+    my @L3 = sort {length($a)<=>length($b)} sort {$b cmp $a} keys(%Links3);
+    my @L4 = sort {length($a)<=>length($b)} sort {$b cmp $a} keys(%Links4);
+    
+    my @AllLinks = (@L1, @L2, @L3, @L4);
     
     foreach (@AllLinks) {
         while($_=~s/\/[^\/]+\/\.\.\//\//g){};
@@ -1020,6 +1036,7 @@ sub getLinks($)
     my $SiteAddr = getSiteAddr($Page);
     my $SiteProtocol = getSiteProtocol($Page);
     
+    my @Res = ();
     foreach my $Link (@AllLinks)
     {
         if(skipUrl($Link)) {
@@ -1027,7 +1044,8 @@ sub getLinks($)
         }
         
         if($Link!~/github\.com\/.*\?after\=/
-        and $Link!~/\?.*\.($PKG_EXT)/) {
+        and $Link!~/\?.*\.($PKG_EXT)/
+        and $Link!~/\?ref=/) {
             $Link=~s/\?.+\Z//g;
         }
         
@@ -1204,9 +1222,12 @@ sub buildVersions()
     }
 }
 
-sub createProfile($)
+sub createProfile()
 {
-    my $To = $_[0];
+    my $To = $OutputProfile;
+    if(not $To) {
+        $To = $Profile_Path;
+    }
     
     if(not defined $DB->{"Installed"})
     {
@@ -1574,11 +1595,16 @@ sub autoBuild($$$)
         or $File eq "configure.in") {
             $Autotools = 1;
         }
-        elsif($File eq "autogen.sh") {
-            $Autogen = 1;
+        elsif($File eq "autogen.sh")
+        {
+            $Autotools = 1;
+            $Autogen = $File;
         }
-        elsif($File eq "bootstrap") {
-            $Bootstrap = 1;
+        elsif($File eq "bootstrap"
+        or $File eq "bootstrap.sh")
+        {
+            $Autotools = 1;
+            $Bootstrap = $File;
         }
         elsif($File eq "buildconf") {
             $Buildconf = 1;
@@ -1591,9 +1617,18 @@ sub autoBuild($$$)
         }
     }
     
+    if($Autotools) {
+        $CMake = 0;
+    }
+    elsif($CMake) {
+        $Autotools = 0;
+    }
+    
     if(defined $Profile->{"BuildSystem"})
     {
-        if($Profile->{"BuildSystem"} eq "CMake") {
+        if($Profile->{"BuildSystem"} eq "CMake")
+        {
+            $CMake = 1;
             $Autotools = 0;
         }
         elsif($Profile->{"BuildSystem"} eq "Autotools")
@@ -1603,13 +1638,13 @@ sub autoBuild($$$)
         }
     }
     
-    if($Autotools and not $CMake)
+    if($Autotools)
     {
         if(not $Configure)
         { # try to generate configure script
             if($Autogen)
             {
-                my $Cmd_A = "NOCONFIGURE=1 NO_CONFIGURE=1 sh autogen.sh --no-configure";
+                my $Cmd_A = "NOCONFIGURE=1 NO_CONFIGURE=1 sh $Autogen --no-configure";
                 $Cmd_A .= " >\"$LogDir/autogen\" 2>&1";
                 
                 qx/$Cmd_A/;
@@ -1623,7 +1658,7 @@ sub autoBuild($$$)
             }
             elsif($Bootstrap)
             {
-                my $Cmd_B = "sh bootstrap";
+                my $Cmd_B = "sh ".$Bootstrap;
                 $Cmd_B .= " >\"$LogDir/bootstrap\" 2>&1";
                 
                 qx/$Cmd_B/;
@@ -1688,40 +1723,7 @@ sub autoBuild($$$)
         $ConfigGlobalVars = addParams($ConfigGlobalVars, $To, $V);
     }
     
-    if($CMake)
-    {
-        if(not checkCmd($CMAKE))
-        {
-            printMsg("ERROR", "can't find \"$CMAKE\"");
-            return;
-        }
-        
-        mkpath("build");
-        chdir("build");
-        
-        my $Cmd_C = $CMAKE." .. -DCMAKE_BUILD_TYPE=Debug -DBUILD_SHARED_LIBS=ON";
-        $Cmd_C .= " -DCMAKE_INSTALL_PREFIX=\"$To\"";
-        $Cmd_C .= " -DCMAKE_C_FLAGS=\"$C_FLAGS\" -DCMAKE_CXX_FLAGS=\"$CXX_FLAGS\"";
-        
-        if($ConfigOptions) {
-            $Cmd_C .= " ".$ConfigOptions;
-        }
-        
-        if($ConfigGlobalVars) {
-            $Cmd_C = $ConfigGlobalVars." ".$Cmd_C;
-        }
-        
-        $Cmd_C .= " >\"$LogDir/cmake\" 2>&1";
-        
-        qx/$Cmd_C/; # execute
-        if($?)
-        {
-            printMsg("ERROR", "failed to 'cmake'");
-            printMsg("ERROR", "see error log in '$LogDir_R/cmake'");
-            return 0;
-        }
-    }
-    elsif($Autotools)
+    if($Autotools)
     {
         my $ConfigLog = "$LogDir/configure";
         my $Cmd_C = "./configure --enable-shared";
@@ -1744,6 +1746,47 @@ sub autoBuild($$$)
         {
             printMsg("ERROR", "failed to 'configure'");
             printMsg("ERROR", "see error log in '$LogDir_R/configure'");
+            return 0;
+        }
+    }
+    elsif($CMake)
+    {
+        my $ConfigLog = "$LogDir/cmake";
+        my $CMake_C = $CMAKE;
+        
+        if($Profile->{"CMakePath"}) {
+            $CMake_C = $Profile->{"CMakePath"};
+        }
+        
+        if(not checkCmd($CMake_C))
+        {
+            printMsg("ERROR", "can't find \"$CMake_C\"");
+            return;
+        }
+        
+        mkpath("build");
+        chdir("build");
+        
+        my $Cmd_C = $CMake_C." .. -DCMAKE_BUILD_TYPE=Debug -DBUILD_SHARED_LIBS=ON";
+        $Cmd_C .= " -DCMAKE_INSTALL_PREFIX=\"$To\"";
+        $Cmd_C .= " -DCMAKE_C_FLAGS=\"$C_FLAGS\" -DCMAKE_CXX_FLAGS=\"$CXX_FLAGS\"";
+        
+        if($ConfigOptions) {
+            $Cmd_C .= " ".$ConfigOptions;
+        }
+        
+        if($ConfigGlobalVars) {
+            $Cmd_C = $ConfigGlobalVars." ".$Cmd_C;
+        }
+        
+        writeFile($ConfigLog, $Cmd_C."\n\n");
+        $Cmd_C .= " >>\"$ConfigLog\" 2>&1";
+        
+        qx/$Cmd_C/; # execute
+        if($?)
+        {
+            printMsg("ERROR", "failed to 'cmake'");
+            printMsg("ERROR", "see error log in '$LogDir_R/cmake'");
             return 0;
         }
     }
@@ -1887,13 +1930,7 @@ sub autoBuild($$$)
     }
     
     copyFiles($To);
-    
-    foreach my $D ("lib", "lib64", "include")
-    { # clear install tree
-        if(not listDir($To."/".$D)) {
-            rmtree($To."/".$D);
-        }
-    }
+    clearInstallTree($To);
     
     if(not listDir($To))
     {
@@ -1901,6 +1938,31 @@ sub autoBuild($$$)
     }
     
     return 1;
+}
+
+sub prepareInstallTree($)
+{
+    my $Dir = $_[0];
+    
+    foreach my $D ("lib", "lib64", "include")
+    {
+        mkpath($Dir."/".$D);
+    }
+}
+
+sub clearInstallTree($)
+{
+    my $Dir = $_[0];
+    
+    foreach my $D ("lib", "lib64", "include")
+    {
+        my $SDir = $Dir."/".$D;
+        if(-d $SDir
+        and not listDir($SDir))
+        { # remove empty
+            rmtree($SDir);
+        }
+    }
 }
 
 sub copyFiles($)
@@ -2054,6 +2116,18 @@ sub buildPackage($$)
     my $InstallDir_A = abs_path($InstallDir);
     my $InstallRoot_A = abs_path($INSTALLED);
     
+    local $SIG{INT} = sub
+    {
+        # clean up install tree
+        rmtree($InstallDir_A);
+        
+        # generate profile
+        chdir($ORIG_DIR);
+        createProfile();
+        
+        safeExit();
+    };
+    
     my $BuildDir = $TMP_DIR."/build/";
     mkpath($BuildDir);
     
@@ -2113,10 +2187,7 @@ sub buildPackage($$)
         chdir($CustomDir);
     }
     
-    foreach my $D ("lib", "lib64", "include")
-    { # prepare install tree
-        mkpath($InstallDir_A."/".$D);
-    }
+    prepareInstallTree($InstallDir_A);
     
     if(defined $BuildScript)
     {
@@ -2127,7 +2198,13 @@ sub buildPackage($$)
         
         my $Err = $?;
         
+        if(defined $Profile->{"SkipBuildErrors"}
+        and $Profile->{"SkipBuildErrors"} eq "On") {
+            $Err = 0;
+        }
+        
         copyFiles($InstallDir_A);
+        clearInstallTree($InstallDir_A);
         
         if($Err or not listDir($InstallDir_A))
         {
@@ -2188,14 +2265,7 @@ sub buildPackage($$)
                 }
             }
             
-            foreach my $D ("lib", "lib64", "include")
-            {
-                if(-d $InstallDir."/".$D
-                and not listDir($InstallDir."/".$D))
-                { # remove empty
-                    rmtree($InstallDir."/".$D);
-                }
-            }
+            clearInstallTree($InstallDir);
             
             my @Fs = listPaths($InstallDir."/lib");
             my @Fs64 = listPaths($InstallDir."/lib64");
@@ -2422,7 +2492,7 @@ sub scenario()
         exitStatus("Error", "Can't execute inside the Java API tracker home directory");
     }
     
-    my $Profile_Path = $ARGV[0];
+    $Profile_Path = $ARGV[0];
     
     if(not $Profile_Path) {
         exitStatus("Error", "profile path is not specified");
@@ -2490,13 +2560,7 @@ sub scenario()
     }
     
     writeDB($DB_PATH);
-    
-    my $Output = $OutputProfile;
-    if(not $Output) {
-        $Output = $Profile_Path;
-    }
-    
-    createProfile($Output);
+    createProfile();
     
     if($TMP_DIR_LOC eq "On") {
         rmtree($TMP_DIR);
