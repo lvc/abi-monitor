@@ -49,6 +49,7 @@ my $DB_PATH = "Monitor.data";
 my $REPO = "src";
 my $INSTALLED = "installed";
 my $BUILD_LOGS = "build_logs";
+my $BUILD_SUBDIR = "MONITOR_build";
 my $TMP_DIR = tempdir(CLEANUP=>1);
 my $TMP_DIR_LOC = "Off";
 my $ACCESS_TIMEOUT = 15;
@@ -68,7 +69,8 @@ my $C_FLAGS = "-g -Og -w -fpermissive";
 my $CXX_FLAGS = $C_FLAGS;
 
 my ($Help, $DumpVersion, $Get, $Build, $Rebuild, $OutputProfile,
-$TargetVersion, $LimitOps, $BuildShared, $BuildNew, $Debug, $GetOld);
+$TargetVersion, $LimitOps, $BuildShared, $BuildNew, $Debug, $GetOld,
+$MakeAddOpt);
 
 my $CmdName = basename($0);
 my $ORIG_DIR = cwd();
@@ -114,7 +116,9 @@ GetOptions("h|help!" => \$Help,
   "output=s" => \$OutputProfile,
   "build-shared!" => \$BuildShared,
   "build-new!" => \$BuildNew,
-  "debug!" => \$Debug
+  "debug!" => \$Debug,
+# other options
+  "make=s" => \$MakeAddOpt
 ) or ERR_MESSAGE();
 
 sub ERR_MESSAGE()
@@ -183,6 +187,10 @@ GENERAL OPTIONS:
   
   -debug
       Enable debug messages.
+
+OTHER OPTIONS:
+  -make OPT
+      Add options to 'make' command (e.g. '-j4').
 ";
 
 # Global
@@ -334,6 +342,9 @@ sub getCurrent()
     
     my $Git = defined $Profile->{"Git"};
     my $Svn = defined $Profile->{"Svn"};
+    my $Hg = defined $Profile->{"Hg"};
+    
+    my $Branch = $Profile->{"Branch"};
     
     if($Git)
     {
@@ -351,6 +362,14 @@ sub getCurrent()
             return;
         }
     }
+    elsif($Hg)
+    {
+        if(not checkCmd("hg"))
+        {
+            printMsg("ERROR", "can't find \"hg\"");
+            return;
+        }
+    }
     
     my $UpToDate = 0;
     
@@ -361,6 +380,11 @@ sub getCurrent()
         if($Git)
         {
             printMsg("INFO", "Updating source code in repository");
+            
+            if($Branch) {
+                system("git checkout ".$Branch);
+            }
+            
             my $Log = qx/git pull/;
             
             if($Log=~/Already up\-to\-date/i) {
@@ -376,6 +400,15 @@ sub getCurrent()
                 $UpToDate = 1;
             }
         }
+        elsif($Hg)
+        {
+            printMsg("INFO", "Updating source code in repository");
+            my $Log = qx/hg pull/;
+            
+            if($Log=~/no changes found/i) {
+                $UpToDate = 1;
+            }
+        }
     }
     else
     {
@@ -383,11 +416,22 @@ sub getCurrent()
         {
             printMsg("INFO", "Cloning git repository");
             system("git clone ".$Profile->{"Git"}." ".$CurRepo);
+            
+            chdir($CurRepo);
+            
+            if($Branch) {
+                system("git checkout ".$Branch);
+            }
         }
         elsif($Svn)
         {
             printMsg("INFO", "Checkouting svn repository");
             system("svn checkout ".$Profile->{"Svn"}." ".$CurRepo);
+        }
+        elsif($Hg)
+        {
+            printMsg("INFO", "Checkouting hg repository");
+            system("hg clone ".$Profile->{"Hg"}." ".$CurRepo);
         }
     }
     
@@ -431,8 +475,7 @@ sub getScmUpdateTime()
                 $Head = "$Source/.git/FETCH_HEAD";
             }
             
-            if(not -f $Head)
-            {
+            if(not -f $Head) {
                 $Head = undef;
             }
         }
@@ -440,8 +483,15 @@ sub getScmUpdateTime()
         {
             $Head = "$Source/.svn/wc.db";
             
-            if(not -f $Head)
-            {
+            if(not -f $Head) {
+                $Head = undef;
+            }
+        }
+        elsif(defined $Profile->{"Hg"})
+        {
+            $Head = "$Source/.hg/store";
+            
+            if(not -e $Head) {
                 $Head = undef;
             }
         }
@@ -508,17 +558,18 @@ sub getVersions_Local()
 
 sub getVersions()
 {
-    my $SourceUrl = $Profile->{"SourceUrl"};
-    
+    my $SourceTag = "SourceUrl";
     if($GetOld) {
-        $SourceUrl = $Profile->{"OldSourceUrl"};
+        $SourceTag = "OldSourceUrl";
     }
+    
+    my $SourceUrl = $Profile->{$SourceTag};
     
     if(not $SourceUrl)
     {
         if(not defined $Profile->{"SourceDir"})
         {
-            printMsg("WARNING", "SourceUrl is not specified in the profile");
+            printMsg("WARNING", "$SourceTag is not specified in the profile");
         }
         return;
     }
@@ -760,6 +811,8 @@ sub readPage($)
         $Page .= "/";
     }
     
+    my $UserAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:50.0) Gecko/20100101 Firefox/50.0";
+    
     my $Cmd = "";
     
     if($USE_CURL and index($Page, "ftp:")!=0)
@@ -768,6 +821,7 @@ sub readPage($)
         $Cmd .= " --connect-timeout $CONNECT_TIMEOUT";
         $Cmd .= " --retry $ACCESS_TRIES --output \"$To\"";
         $Cmd .= " -w \"\%{url_effective}\\n\"";
+        $Cmd .= " -A \"$UserAgent\"";
     }
     else
     {
@@ -777,6 +831,7 @@ sub readPage($)
         # $Cmd .= " --quiet";
         $Cmd .= " --connect-timeout=$CONNECT_TIMEOUT";
         $Cmd .= " --tries=$ACCESS_TRIES --output-document=\"$To\"";
+        $Cmd .= " --user-agent=\"$UserAgent\"";
     }
     
     my $Pid = fork();
@@ -1235,7 +1290,7 @@ sub createProfile()
         return;
     }
     
-    my @ProfileKeys = ("Name", "Title", "SourceUrl", "SourceUrlDepth", "OldSourceUrl", "OldSourceUrlDepth", "SourceDir", "SkipUrl", "Git", "Svn", "Doc",
+    my @ProfileKeys = ("Name", "Title", "SourceUrl", "SourceUrlDepth", "OldSourceUrl", "OldSourceUrlDepth", "SourceDir", "SkipUrl", "Git", "Svn", "Hg", "Doc",
     "Maintainer", "MaintainerUrl", "BuildSystem", "Configure", "CurrentConfigure", "BuildScript", "PreInstall", "CurrentPreInstall", "PostInstall", "CurrentPostInstall", "SkipObjects", "SkipHeaders", "SkipSymbols", "SkipInternalSymbols", "SkipTypes", "SkipInternalTypes");
     my $MaxLen_P = 13;
     
@@ -1432,12 +1487,14 @@ sub createProfile()
         $N_Info->{"Number"} = $V;
         $N_Info->{"Installed"} = $DB->{"Installed"}{$V};
         $N_Info->{"Source"} = $DB->{"Source"}{$V};
-        $N_Info->{"Changelog"} = $DB->{"Changelog"}{$V};
-        if(not $N_Info->{"Changelog"})
-        { # default
-            if(defined $Profile->{"Changelog"})
-            {
-                $N_Info->{"Changelog"} = $Profile->{"Changelog"};
+        
+        if(defined $Profile->{"Changelog"}) {
+            $N_Info->{"Changelog"} = $Profile->{"Changelog"};
+        }
+        else
+        {
+            if($DB->{"Changelog"}{$V}) {
+                $N_Info->{"Changelog"} = $DB->{"Changelog"}{$V};
             }
             else
             {
@@ -1448,6 +1505,11 @@ sub createProfile()
                     $N_Info->{"Changelog"} = "Off";
                 }
             }
+        }
+        
+        if(not $N_Info->{"Changelog"})
+        { # default
+            
         }
         if(defined $Profile->{"PkgDiff"}) {
             $N_Info->{"PkgDiff"} = $Profile->{"PkgDiff"};
@@ -1534,7 +1596,8 @@ sub findChangelog($)
     my $Dir = $_[0];
     
     foreach my $Name ("NEWS", "CHANGES", "CHANGES.txt", "RELEASE_NOTES", "ChangeLog", "Changelog",
-    "RELEASE_NOTES.md", "CHANGELOG.md", "RELEASE_NOTES.markdown", "NEWS.md")
+    "changelog", "RELEASE_NOTES.md", "CHANGELOG.md", "CHANGELOG.txt", "RELEASE_NOTES.markdown", "NEWS.md",
+    "CHANGES.md", "changes.txt", "changes", "CHANGELOG", "doc/ChangeLog")
     {
         if(-f $Dir."/".$Name
         and -s $Dir."/".$Name)
@@ -1686,7 +1749,17 @@ sub autoBuild($$$)
             }
             else
             {
-                $Autotools = 0;
+                my $Cmd_R = "autoreconf --force --verbose --install";
+                $Cmd_R .= " >\"$LogDir/autoreconf\" 2>&1";
+                
+                qx/$Cmd_R/;
+                
+                if(not -f "configure")
+                {
+                    printMsg("ERROR", "failed to 'autoreconf'");
+                    printMsg("ERROR", "see error log in '$LogDir_R/autoreconf'");
+                    return 0;
+                }
             }
         }
     }
@@ -1764,8 +1837,9 @@ sub autoBuild($$$)
             return;
         }
         
-        mkpath("build");
-        chdir("build");
+        my $BDir = $BUILD_SUBDIR;
+        mkpath($BDir);
+        chdir($BDir);
         
         my $Cmd_C = $CMake_C." .. -DCMAKE_BUILD_TYPE=Debug -DBUILD_SHARED_LIBS=ON";
         $Cmd_C .= " -DCMAKE_INSTALL_PREFIX=\"$To\"";
@@ -1847,6 +1921,11 @@ sub autoBuild($$$)
     }
     
     my $MakeOptions = $Profile->{"Make"};
+    
+    if($MakeAddOpt) {
+        $MakeOptions = $MakeAddOpt;
+    }
+    
     $MakeOptions = addParams($MakeOptions, $To, $V);
     
     my $MakeGlobalVars = $Profile->{"MakeGlobal"};
@@ -1855,13 +1934,17 @@ sub autoBuild($$$)
     if($CMake or $Autotools)
     {
         my $Cmd_M = "make";
+        my $MakeLog = "$LogDir/make";
+        
         if($MakeOptions) {
             $Cmd_M .= " ".$MakeOptions;
         }
         if($MakeGlobalVars) {
             $Cmd_M = $MakeGlobalVars." ".$Cmd_M;
         }
-        $Cmd_M .= " >$LogDir/make 2>&1";
+        
+        writeFile($MakeLog, $Cmd_M."\n\n");
+        $Cmd_M .= " >>$MakeLog 2>&1";
         
         qx/$Cmd_M/; # execute
         if($?)
@@ -1871,13 +1954,17 @@ sub autoBuild($$$)
             return 0;
         }
         
-        my $Cmd_I = "make install >$LogDir/install 2>&1";
-        qx/$Cmd_I/; # execute
-        if($?)
+        if(not defined $Profile->{"Install"}
+        or $Profile->{"Install"} eq "On")
         {
-            printMsg("ERROR", "failed to 'make install'");
-            printMsg("ERROR", "see error log in '$LogDir_R/install'");
-            return 0;
+            my $Cmd_I = "make install >$LogDir/install 2>&1";
+            qx/$Cmd_I/; # execute
+            if($?)
+            {
+                printMsg("ERROR", "failed to 'make install'");
+                printMsg("ERROR", "see error log in '$LogDir_R/install'");
+                return 0;
+            }
         }
     }
     elsif($Waf)
@@ -2006,6 +2093,7 @@ sub copyFiles($)
                 foreach my $F (@Files)
                 {
                     my $O_To = $To."/".$Dir."/".$F;
+                    $O_To=~s&/\.libs/&/&g;
                     my $D_To = getDirname($O_To);
                     mkpath($D_To);
                     copy($F, $D_To);
@@ -2021,6 +2109,7 @@ sub addParams($$$)
     
     $Cmd=~s/{INSTALL_TO}/$To/g;
     $Cmd=~s/{VERSION}/$V/g;
+    $Cmd=~s/{BUILD_SUBDIR}/$BUILD_SUBDIR/g;
     
     my $InstallRoot_A = $ORIG_DIR."/".$INSTALLED;
     $Cmd=~s/{INSTALL_ROOT}/$InstallRoot_A/g;
@@ -2044,6 +2133,24 @@ sub findObjects($)
         @Files = findFiles($Dir, "f", ".*\\.so\\..*");
         @Files = (@Files, findFiles($Dir, "f", ".*\\.so"));
     }
+    
+    my @Res = ();
+    
+    foreach my $F (@Files)
+    {
+        if(-B $F) {
+            push(@Res, $F);
+        }
+    }
+    
+    return @Res;
+}
+
+sub findStatic($)
+{
+    my $Dir = $_[0];
+    
+    my @Files = findFiles($Dir, "f", ".*\\.a");
     
     my @Res = ();
     
@@ -2246,7 +2353,8 @@ sub buildPackage($$)
             "etc", "var", "opt", "libexec", "doc",
             "manual", "man", "logs", "icons", "conf",
             "cgi-bin", "docs", "systemd", "udev",
-            "tmp", "info", "mkspecs", "gir")
+            "tmp", "info", "mkspecs", "gir", "fonts",
+            "cmake", "aclocal", "tutorials", "test")
             {
                 if(-d $InstallDir."/".$D) {
                     rmtree($InstallDir."/".$D);
@@ -2304,6 +2412,51 @@ sub buildPackage($$)
                 rmtree($InstallDir);
             }
         }
+        
+        if(my @Objects = findObjects($InstallDir))
+        {
+            foreach my $Obj (sort {lc($a) cmp lc($b)} @Objects)
+            {
+                my $Producer = `readelf --debug-dump=info \"$Obj\" | grep -m1 DW_AT_producer`;
+                
+                if(not $Producer)
+                {
+                    printMsg("WARNING", "debug-info is not found in the object ".getFilename($Obj));
+                    last;
+                }
+                
+                my %Opts = ();
+                while($Producer=~s/(\A| )(\-O([0-3]|g))( |\Z)/ /) {
+                    $Opts{keys(%Opts)} = $2;
+                }
+                
+                if(keys(%Opts))
+                {
+                    if($Opts{keys(%Opts)-1} ne "-Og")
+                    {
+                        printMsg("WARNING", "incompatible build option detected in the object ".getFilename($Obj).": ".$Opts{keys(%Opts)-1}." (required -Og for better analysis)");
+                        last;
+                    }
+                }
+                else
+                {
+                    printMsg("WARNING", "the object ".getFilename($Obj)." should be compiled with -Og option for better analysis");
+                    last;
+                }
+            }
+        }
+        else
+        {
+            if(not findStatic($InstallDir))
+            {
+                delete($DB->{"Installed"}{$V});
+                printMsg("ERROR", "no binary objects installed");
+                rmtree($InstallDir);
+            }
+            else {
+                printMsg("WARNING", "no shared objects installed");
+            }
+        }
     }
     else
     {
@@ -2348,7 +2501,7 @@ sub buildShared($)
         my $Cmd_B = $GCC." -nostdlib -shared -o \"$Object_S\" -Wl,--whole-archive \"$Object_A\"";
         qx/$Cmd_B/;
         
-        if($?)
+        if($? or not -f $Object_S)
         {
             print STDERR "ERROR: failed to build shared object(s)\n";
             chdir($ORIG_DIR);
@@ -2515,7 +2668,7 @@ sub scenario()
     and $Profile->{"LocalBuild"} eq "On")
     {
         $TMP_DIR_LOC = "On";
-        $TMP_DIR = ".tmp";
+        $TMP_DIR = ".tmp_build_".$$; # pid
         mkpath($TMP_DIR);
         $TMP_DIR = abs_path($TMP_DIR);
     }
@@ -2538,7 +2691,8 @@ sub scenario()
         getVersions();
         
         if(defined $Profile->{"Git"}
-        or defined $Profile->{"Svn"})
+        or defined $Profile->{"Svn"}
+        or defined $Profile->{"Hg"})
         {
             getCurrent();
         }
