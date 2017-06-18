@@ -40,8 +40,10 @@ PROFILE EXAMPLE:
 {
   "Name":       "libssh",
   "SourceUrl":  "https://red.libssh.org/projects/libssh/files",
-  "Git":        "http://git.libssh.org/projects/libssh.git"
+  "Git":        "https://git.libssh.org/projects/libssh.git"
 }
+
+See more profile examples in this directory: https://github.com/lvc/upstream-tracker/tree/master/profile
 
 ADV. OPTIONS:
 You can set additional option "BuildScript" to define the path to the shell script that should be used to build packages. It will be executed inside the source tree of a package. The script should install the library to the output directory defined by the INSTALL_TO environment variable. The code should be compiled with the "-g -Og" GCC options.

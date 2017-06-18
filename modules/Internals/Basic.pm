@@ -134,6 +134,10 @@ sub getSiteProtocol($)
     return "";
 }
 
+sub getSite($) {
+    return getSiteProtocol($_[0]).getSiteAddr($_[0]);
+}
+
 sub extractPackage($$)
 {
     my ($Path, $OutDir) = @_;

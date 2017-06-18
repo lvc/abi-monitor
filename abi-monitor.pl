@@ -65,8 +65,8 @@ push(@INC, dirname($MODULES_DIR));
 my $CMAKE = "cmake";
 my $GCC = "gcc";
 
-my $C_FLAGS = "-g -Og -w -fpermissive";
-my $CXX_FLAGS = $C_FLAGS;
+my $C_FLAGS_B = "-g -Og -w -fpermissive";
+my $CXX_FLAGS_B = $C_FLAGS_B;
 
 my ($Help, $DumpVersion, $Get, $Build, $Rebuild, $OutputProfile,
 $TargetVersion, $LimitOps, $BuildShared, $BuildNew, $Debug, $GetOld,
@@ -198,7 +198,10 @@ my $Profile_Path;
 my $Profile;
 my $DB;
 my $TARGET_LIB;
+my $C_FLAGS;
+my $CXX_FLAGS;
 
+my %Cache;
 my %NewVer;
 
 sub get_Modules()
@@ -598,20 +601,22 @@ sub getVersions()
         }
     }
     
-    my @Links = getLinks($SourceUrl);
+    my @Links = getLinks(\$SourceUrl);
     
     my $Depth = 2;
-    
-    if(defined $Profile->{"SourceUrlDepth"})
-    { # More steps into directory tree
-        $Depth = $Profile->{"SourceUrlDepth"};
-    }
     
     if($GetOld)
     {
         if(defined $Profile->{"OldSourceUrlDepth"})
         { # More steps into directory tree
             $Depth = $Profile->{"OldSourceUrlDepth"};
+        }
+    }
+    else
+    {
+        if(defined $Profile->{"SourceUrlDepth"})
+        { # More steps into directory tree
+            $Depth = $Profile->{"SourceUrlDepth"};
         }
     }
     
@@ -628,7 +633,7 @@ sub getVersions()
                 if(not defined $Checked{$Page})
                 {
                     $Checked{$Page} = 1;
-                    foreach my $Link (getLinks($Page))
+                    foreach my $Link (getLinks(\$Page))
                     {
                         push(@Links, $Link);
                     }
@@ -640,7 +645,11 @@ sub getVersions()
     my $Packages = getPackages(@Links);
     my $NumOp = 0;
     
-    foreach my $V (sort {cmpVersions_P($b, $a, $Profile)} keys(%{$Packages}))
+    my @Versions = keys(%{$Packages});
+    @Versions = naturalSequence($Profile, @Versions);
+    @Versions = reverse(@Versions);
+    
+    foreach my $V (@Versions)
     {
         my $R = getPackage($Packages->{$V}{"Url"}, $Packages->{$V}{"Pkg"}, $V);
         
@@ -662,8 +671,11 @@ sub getVersions()
     }
 }
 
-sub getHighRelease()
+sub getHighestRelease()
 {
+    if(defined $Cache{"HighestRelease"}) {
+        return $Cache{"HighestRelease"};
+    }
     my @Vers = keys(%{$DB->{"Source"}});
     @Vers = naturalSequence($Profile, @Vers);
     @Vers = reverse(@Vers);
@@ -672,7 +684,7 @@ sub getHighRelease()
     {
         if(getVersionType($V, $Profile) eq "release")
         {
-            return $V;
+            return ($Cache{"HighestRelease"} = $V);
         }
     }
     
@@ -709,9 +721,9 @@ sub getPackage($$$)
     
     if(getVersionType($V, $Profile) ne "release")
     {
-        if(my $HighRelease = getHighRelease())
+        if(my $HighestRelease = getHighestRelease())
         {
-            if(cmpVersions_P($V, $HighRelease, $Profile)==-1)
+            if(cmpVersions_P($V, $HighestRelease, $Profile)==-1)
             { # do not download old alfa/beta/pre releases
                 return -1;
             }
@@ -792,6 +804,7 @@ sub getPackage($$$)
     
     $DB->{"Source"}{$V} = $To;
     $NewVer{$V} = 1;
+    $Cache{"HighestRelease"} = undef;
     
     return 1;
 }
@@ -870,9 +883,14 @@ sub getPackages(@)
     my %Res = ();
     
     my $Pkg = $TARGET_LIB;
+    my $Suffix = "";
     
     if(defined $Profile->{"Package"}) {
         $Pkg = $Profile->{"Package"};
+    }
+    
+    if($Pkg=~/\A(.+)\{V\}(.+)\Z/) {
+        ($Pkg, $Suffix) = ($1, $2);
     }
     
     foreach my $Link (@_)
@@ -883,14 +901,14 @@ sub getPackages(@)
         
         my ($P, $V, $E) = ();
         
-        if($Link=~/(\A|[\/\=])(\Q$Pkg\E[_\-]*([^\/"'<>+%]+?)\.($PKG_EXT))([\/\?]|\Z)/i)
+        if($Link=~/(\A|[\/\=])(\Q$Pkg\E[_\-]*([^\/"'<>+%]+?)(\-src|\-source|\Q$Suffix\E|)\.($PKG_EXT))([\/\?]|\Z)/i)
         {
-            ($P, $V, $E) = ($2, $3, $4);
+            ($P, $V, $E) = ($2, $3, $5);
         }
-        elsif($Link=~/(archive|get)\/v?([\d\.\-\_]+([ab]\d*|alpha\d*|beta\d*|rc\d*|stable|))(|\-src|\-source)\.(tar\.gz)/i)
+        elsif($Link=~/(archive|get)\/(|\w+\/)v?([\d\.\-\_]+([ab]\d*|alpha\d*|beta\d*|rc\d*|stable|))(\-src|\-source|\Q$Suffix\E|)\.(tar\.gz)/i)
         { # github
           # bitbucket
-            ($V, $E) = ($2, $5);
+            ($V, $E) = ($3, $6);
         }
         elsif($Link=~/\/archive\.($PKG_EXT)\?ref=(.+)\Z/i)
         { # gitlab
@@ -983,20 +1001,20 @@ sub getPages($$)
         
         my $DirVer = undef;
         
-        if($PLink=~/https:\/\/sourceforge\.net\/projects\/[^\/]+\/files\/[^\/]+\/($TARGET_LIB[\-_ ]*|)([^\/]+?)\/\Z/i) {
+        if($PLink=~/https:\/\/sourceforge\.net\/projects\/[^\/]+\/files\/[^\/]+\/($TARGET_LIB[\-_ ]*|)v?(\d[^\/]*?)[ _-]*(Src|Source|Sources|)\/\Z/i) {
             $DirVer = $2;
         }
-        elsif($PLink=~/\/($TARGET_LIB[\-_ ]*|)v?([\d\.\-\_]+)[\/]*\Z/i) {
+        elsif($PLink=~/\/($TARGET_LIB[\-_ ]*|)v?(\d[^\/]*?)[\/]*\Z/i)
+        { # 9.1.1rc7
             $DirVer = $2;
         }
         
         if($DirVer)
         {
-            $DirVer=~s/[ _-](Src|Source|Sources)\Z//i;
             if(skipOldLink($DirVer))
             {
                 if($Debug) {
-                    printMsg("INFO", "Skip: $Link");
+                    printMsg("INFO", "Skip (Old dir): $Link");
                 }
                 next;
             }
@@ -1011,6 +1029,12 @@ sub getPages($$)
 sub skipOldLink($)
 {
     my $V = $_[0];
+    
+    my $VType = getVersionType($V, $Profile);
+    
+    if($VType eq "unknown") {
+        return 0;
+    }
     
     if(defined $DB->{"Source"}{$V}) {
         return 1;
@@ -1028,12 +1052,22 @@ sub skipOldLink($)
         }
     }
     
+    if($VType ne "release"
+    and my $HighestRel = getHighestRelease())
+    {
+        if(cmpVersions_P($V, $HighestRel, $Profile)==-1)
+        { # do not download old betas
+            return 1;
+        }
+    }
+    
     return 0;
 }
 
 sub getLinks($)
 {
-    my $Page = $_[0];
+    my $PageRef = $_[0];
+    my $Page = ${$PageRef};
     
     if($Debug) {
         printMsg("INFO", "Reading ".$Page);
@@ -1048,7 +1082,7 @@ sub getLinks($)
     my $Content = readFile($To);
     unlink($To);
     
-    my (%Links1, %Links2, %Links3, %Links4) = ();
+    my (%Links1, %Links2, %Links3, %Links4, %Links5) = ();
     
     my @Lines = split(/\n/, $Content);
     
@@ -1066,6 +1100,9 @@ sub getLinks($)
         while($Line=~s/["']([^"'<>\s]+\.($PKG_EXT))["']//i) {
             $Links4{linkSum($Url, $1)} = 1;
         }
+        while($Line=~s/(src|href)\s*\=\s*([^"'<>\s]+?)[ >]//i) {
+            $Links2{linkSum($Url, $2)} = 1;
+        }
     }
     
     foreach my $U (keys(%Links4))
@@ -1081,8 +1118,9 @@ sub getLinks($)
     my @L2 = sort {length($a)<=>length($b)} sort {$b cmp $a} keys(%Links2);
     my @L3 = sort {length($a)<=>length($b)} sort {$b cmp $a} keys(%Links3);
     my @L4 = sort {length($a)<=>length($b)} sort {$b cmp $a} keys(%Links4);
+    my @L5 = sort {length($a)<=>length($b)} sort {$b cmp $a} keys(%Links5);
     
-    my @AllLinks = (@L1, @L2, @L3, @L4);
+    my @AllLinks = (@L1, @L2, @L3, @L4, @L5);
     
     foreach (@AllLinks) {
         while($_=~s/\/[^\/]+\/\.\.\//\//g){};
@@ -1094,7 +1132,11 @@ sub getLinks($)
     my @Res = ();
     foreach my $Link (@AllLinks)
     {
-        if(skipUrl($Link)) {
+        if(skipUrl($Link))
+        {
+            if($Debug) {
+                printMsg("INFO", "Skip: $Link");
+            }
             next;
         }
         
@@ -1122,7 +1164,7 @@ sub getLinks($)
         
         if(index($Link, "sourceforge")!=-1)
         {
-            if($Link=~/($PKG_EXT)(\/.+|)\Z/)
+            if($Link=~/\.($PKG_EXT)(\/.+|)\Z/)
             {
                 if($2 ne "/download") {
                     next;
@@ -1138,6 +1180,8 @@ sub getLinks($)
         
         push(@Res, $Link);
     }
+    
+    ${$PageRef} = $Url;
     
     return @Res;
 }
@@ -1179,20 +1223,17 @@ sub linkSum($$)
     $Page=~s/\?.+?\Z//g;
     $Path=~s/\A\.\///g;
     
-    if(index($Path, "/")==0)
-    {
-        if($Path=~/\A\/\/([^\/:]+\.[a-z]+\/.+)\Z/)
-        { # //liblouis.googlecode.com/files/liblouis-1.6.2.tar.gz
-            return $1;
-        }
-        
-        return getSiteAddr($Page).$Path;
+    if($Path=~/\A\/\/([^\/:]+\.[a-z]+\/.+)\Z/)
+    { # //liblouis.googlecode.com/files/liblouis-1.6.2.tar.gz
+        return $1;
     }
     elsif(index($Path, "://")!=-1) {
         return $Path;
     }
-    elsif($Page=~/\/\Z/)
-    {
+    elsif(index($Path, "/")==0) {
+        return getSite($Page).$Path;
+    }
+    elsif($Page=~/\/\Z/) {
         return $Page.$Path;
     }
     
@@ -1213,8 +1254,8 @@ sub buildVersions()
         {
             if($Machine=~/x86_64/)
             {
-                $C_FLAGS .= " -fPIC";
-                $CXX_FLAGS .= " -fPIC";
+                $C_FLAGS_B .= " -fPIC";
+                $CXX_FLAGS_B .= " -fPIC";
             }
         }
     }
@@ -1229,7 +1270,6 @@ sub buildVersions()
     
     my @Versions = keys(%{$DB->{"Source"}});
     @Versions = naturalSequence($Profile, @Versions);
-    
     @Versions = reverse(@Versions);
     
     my $NumOp = 0;
@@ -1595,12 +1635,14 @@ sub findChangelog($)
 {
     my $Dir = $_[0];
     
-    foreach my $Name ("NEWS", "CHANGES", "CHANGES.txt", "RELEASE_NOTES", "ChangeLog", "Changelog",
+    my $MIN_LOG = 250;
+    
+    foreach my $Name ("NEWS", "CHANGES", "CHANGES.txt", "RELEASE_NOTES", "ChangeLog", "ChangeLog.md", "Changelog",
     "changelog", "RELEASE_NOTES.md", "CHANGELOG.md", "CHANGELOG.txt", "RELEASE_NOTES.markdown", "NEWS.md",
-    "CHANGES.md", "changes.txt", "changes", "CHANGELOG", "doc/ChangeLog")
+    "CHANGES.md", "changes.txt", "changes", "CHANGELOG", "RELEASE-NOTES", "WHATSNEW", "CHANGE_LOG", "doc/ChangeLog")
     {
         if(-f $Dir."/".$Name
-        and -s $Dir."/".$Name)
+        and (-s $Dir."/".$Name > $MIN_LOG))
         {
             return $Name;
         }
@@ -1635,6 +1677,15 @@ sub autoBuild($$$)
             printMsg("ERROR", "pre install has failed");
             printMsg("ERROR", "see error log in '$LogDir_R/pre_install'");
             return 0;
+        }
+    }
+    
+    my $PreMake = $Profile->{"PreMake"};
+    
+    if($V eq "current")
+    {
+        if(defined $Profile->{"CurrentPreMake"}) {
+            $PreMake = $Profile->{"CurrentPreMake"};
         }
     }
     
@@ -1881,7 +1932,7 @@ sub autoBuild($$$)
         $Cmd_I .= " >\"$LogDir/scons\" 2>&1";
         
         my $SConstruct = readFile("SConstruct");
-        $SConstruct=~s/'-O0'/'-Og'/;
+        $SConstruct=~s/'-O[0123]'/'-Og'/;
         writeFile("SConstruct", $SConstruct);
         
         qx/$Cmd_I/; # execute
@@ -1894,7 +1945,9 @@ sub autoBuild($$$)
     }
     elsif($Waf)
     {
-        my $Cmd_C = "./waf configure --prefix=\"$To\" --debug";
+        my $ConfigLog = "$LogDir/configure";
+        my $Cmd_C = "./waf configure --prefix=\"$To\"";
+        $Cmd_C = "CFLAGS=\"$C_FLAGS\" CXXFLAGS=\"$CXX_FLAGS\" ".$Cmd_C;
         
         if($ConfigOptions) {
             $Cmd_C .= " ".$ConfigOptions;
@@ -1904,7 +1957,8 @@ sub autoBuild($$$)
             $Cmd_C = $ConfigGlobalVars." ".$Cmd_C;
         }
         
-        $Cmd_C .= " >\"$LogDir/configure\" 2>&1";
+        writeFile($ConfigLog, $Cmd_C."\n\n");
+        $Cmd_C .= " >>\"$ConfigLog\" 2>&1";
         
         qx/$Cmd_C/; # execute
         if($?)
@@ -1930,6 +1984,22 @@ sub autoBuild($$$)
     
     my $MakeGlobalVars = $Profile->{"MakeGlobal"};
     $MakeGlobalVars = addParams($MakeGlobalVars, $To, $V);
+    
+    my $InstallGlobalVars = $Profile->{"InstallGlobal"};
+    $InstallGlobalVars = addParams($InstallGlobalVars, $To, $V);
+    
+    if($PreMake)
+    {
+        $PreMake = addParams($PreMake, $To, $V);
+        my $Cmd_PM = $PreMake." >$LogDir/pre_make 2>&1";
+        qx/$Cmd_PM/; # execute
+        if($?)
+        {
+            printMsg("ERROR", "pre make has failed");
+            printMsg("ERROR", "see error log in '$LogDir_R/pre_make'");
+            return 0;
+        }
+    }
     
     if($CMake or $Autotools)
     {
@@ -1957,7 +2027,14 @@ sub autoBuild($$$)
         if(not defined $Profile->{"Install"}
         or $Profile->{"Install"} eq "On")
         {
-            my $Cmd_I = "make install >$LogDir/install 2>&1";
+            my $Cmd_I = "make install";
+            
+            if($InstallGlobalVars) {
+                $Cmd_I = $InstallGlobalVars." ".$Cmd_I;
+            }
+            
+            $Cmd_I .= " >$LogDir/install 2>&1";
+            
             qx/$Cmd_I/; # execute
             if($?)
             {
@@ -2056,7 +2133,7 @@ sub copyFiles($)
 {
     my $To = $_[0];
     
-    foreach my $Tag ("CopyHeaders", "CopyObjects")
+    foreach my $Tag ("CopyHeaders", "CopyObjects", "CopyStatic")
     {
         if(not defined $Profile->{$Tag}) {
             next;
@@ -2082,8 +2159,11 @@ sub copyFiles($)
                     if($Tag eq "CopyHeaders") {
                         @Files = findHeaders($D);
                     }
-                    else {
+                    elsif($Tag eq "CopyObjects") {
                         @Files = findObjects($D);
+                    }
+                    else {
+                        @Files = findStatic($D);
                     }
                 }
                 elsif(-f $D) {
@@ -2108,11 +2188,17 @@ sub addParams($$$)
     my ($Cmd, $To, $V) = @_;
     
     $Cmd=~s/{INSTALL_TO}/$To/g;
+    $Cmd=~s/\$INSTALL_TO/$To/g;
+    
     $Cmd=~s/{VERSION}/$V/g;
+    $Cmd=~s/\$VERSION/$V/g;
+    
     $Cmd=~s/{BUILD_SUBDIR}/$BUILD_SUBDIR/g;
+    $Cmd=~s/\$BUILD_SUBDIR/$BUILD_SUBDIR/g;
     
     my $InstallRoot_A = $ORIG_DIR."/".$INSTALLED;
     $Cmd=~s/{INSTALL_ROOT}/$InstallRoot_A/g;
+    $Cmd=~s/\$INSTALL_ROOT/$InstallRoot_A/g;
     
     return $Cmd;
 }
@@ -2235,6 +2321,17 @@ sub buildPackage($$)
         safeExit();
     };
     
+    $C_FLAGS = $C_FLAGS_B;
+    $CXX_FLAGS = $CXX_FLAGS_B;
+    
+    if(my $AddCFlags = $Profile->{"CFlags"}) {
+        $C_FLAGS .= " ".addParams($AddCFlags, $InstallDir_A, $V);
+    }
+    
+    if(my $AddCxxFlags = $Profile->{"CxxFlags"}) {
+        $CXX_FLAGS .= " ".addParams($AddCxxFlags, $InstallDir_A, $V);
+    }
+    
     my $BuildDir = $TMP_DIR."/build/";
     mkpath($BuildDir);
     
@@ -2253,6 +2350,7 @@ sub buildPackage($$)
             if($?)
             {
                 printMsg("ERROR", "Failed to extract package \'".getFilename($Package)."\'");
+                rmtree($BuildDir);
                 return 0;
             }
         }
@@ -2277,7 +2375,6 @@ sub buildPackage($$)
         }
     }
     
-    
     if($V ne "current" and not defined $Profile->{"Changelog"})
     {
         my $Found = findChangelog(".");
@@ -2290,7 +2387,10 @@ sub buildPackage($$)
         }
     }
     
-    if(my $CustomDir = $Profile->{"BuildDir"}) {
+    if($V eq "current" and my $CurCustomDir = $Profile->{"CurrentBuildDir"}) {
+        chdir($CurCustomDir);
+    }
+    elsif(my $CustomDir = $Profile->{"BuildDir"}) {
         chdir($CustomDir);
     }
     
@@ -2298,7 +2398,7 @@ sub buildPackage($$)
     
     if(defined $BuildScript)
     {
-        my $Cmd_I = "INSTALL_TO=\"$InstallDir_A\" INSTALL_ROOT=\"$InstallRoot_A\" sh \"".$BuildScript."\"";
+        my $Cmd_I = "INSTALL_TO=\"$InstallDir_A\" M_INSTALL_ROOT=\"$InstallRoot_A\" VERSION=\"$V\" sh \"".$BuildScript."\"";
         $Cmd_I .= " >\"$LogDir/build\" 2>&1";
         
         qx/$Cmd_I/; # execute
@@ -2313,11 +2413,16 @@ sub buildPackage($$)
         copyFiles($InstallDir_A);
         clearInstallTree($InstallDir_A);
         
-        if($Err or not listDir($InstallDir_A))
+        if($Err)
         {
             delete($DB->{"Installed"}{$V});
-            
-            printMsg("ERROR", "custom build has failed");
+            printMsg("ERROR", "custom build has failed (exit code $Err)");
+            printMsg("ERROR", "see error log in '$LogDir_R/build'");
+        }
+        elsif(not listDir($InstallDir_A))
+        {
+            delete($DB->{"Installed"}{$V});
+            printMsg("ERROR", "custom build has failed (empty install tree)");
             printMsg("ERROR", "see error log in '$LogDir_R/build'");
         }
         else {
@@ -2347,21 +2452,21 @@ sub buildPackage($$)
         }
         
         if(not defined $Profile->{"ClearInstalled"}
-        or $Profile->{"ClearInstalled"} ne "Off")
+        or $Profile->{"ClearInstalled"} eq "On")
         {
             foreach my $D ("share", "bin", "sbin",
             "etc", "var", "opt", "libexec", "doc",
             "manual", "man", "logs", "icons", "conf",
             "cgi-bin", "docs", "systemd", "udev",
             "tmp", "info", "mkspecs", "gir", "fonts",
-            "cmake", "aclocal", "tutorials", "test")
+            "aclocal", "tutorials", "test")
             {
                 if(-d $InstallDir."/".$D) {
                     rmtree($InstallDir."/".$D);
                 }
             }
             
-            foreach my $D ("systemd", "udev", "cmake",
+            foreach my $D ("systemd", "udev",
             "girepository-1.0", "python2.7", "sysctl.d",
             "qml", "libexec")
             {
@@ -2410,6 +2515,7 @@ sub buildPackage($$)
                 delete($DB->{"Installed"}{$V});
                 printMsg("ERROR", "failed to build (empty tree)");
                 rmtree($InstallDir);
+                return 1;
             }
         }
         
@@ -2417,12 +2523,10 @@ sub buildPackage($$)
         {
             foreach my $Obj (sort {lc($a) cmp lc($b)} @Objects)
             {
-                my $Producer = `readelf --debug-dump=info \"$Obj\" | grep -m1 DW_AT_producer`;
+                my $Producer = `readelf --debug-dump=info \"$Obj\" | grep DW_AT_producer | grep -v 'GNU AS' | grep -m1 DW_AT_producer`;
                 
-                if(not $Producer)
-                {
+                if(not $Producer) {
                     printMsg("WARNING", "debug-info is not found in the object ".getFilename($Obj));
-                    last;
                 }
                 
                 my %Opts = ();
@@ -2432,16 +2536,12 @@ sub buildPackage($$)
                 
                 if(keys(%Opts))
                 {
-                    if($Opts{keys(%Opts)-1} ne "-Og")
-                    {
+                    if($Opts{keys(%Opts)-1} ne "-Og") {
                         printMsg("WARNING", "incompatible build option detected in the object ".getFilename($Obj).": ".$Opts{keys(%Opts)-1}." (required -Og for better analysis)");
-                        last;
                     }
                 }
-                else
-                {
+                else {
                     printMsg("WARNING", "the object ".getFilename($Obj)." should be compiled with -Og option for better analysis");
-                    last;
                 }
             }
         }
@@ -2452,6 +2552,7 @@ sub buildPackage($$)
                 delete($DB->{"Installed"}{$V});
                 printMsg("ERROR", "no binary objects installed");
                 rmtree($InstallDir);
+                return 1;
             }
             else {
                 printMsg("WARNING", "no shared objects installed");
