@@ -170,7 +170,7 @@ GENERAL OPTIONS:
       Re-build library versions.
   
   -limit NUM
-      Limit number of operations to NUM. This is usefull if
+      Limit number of operations to NUM. This is useful if
       you want to download or build only NUM packages.
   
   -v NUM
