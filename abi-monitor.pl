@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 ##################################################################
-# ABI Monitor 1.11
+# ABI Monitor 1.12
 # A tool to monitor new versions of a software library, build them
 # and create profile for ABI Tracker.
 #
@@ -44,7 +44,7 @@ use File::Basename qw(dirname basename);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
-my $TOOL_VERSION = "1.11";
+my $TOOL_VERSION = "1.12";
 my $DB_PATH = "Monitor.data";
 my $REPO = "src";
 my $INSTALLED = "installed";
@@ -56,7 +56,7 @@ my $ACCESS_TIMEOUT = 15;
 my $CONNECT_TIMEOUT = 5;
 my $ACCESS_TRIES = 2;
 my $USE_CURL = 1;
-my $PKG_EXT = "tar\\.bz2|tar\\.gz|tar\\.xz|tar\\.lzma|tar\\.lz|tar\\.Z|tbz2|tgz|zip";
+my $PKG_EXT = "tar\\.bz2|tar\\.gz|tar\\.xz|tar\\.lzma|tar\\.lz|tar\\.Z|tbz2|tgz|txz|zip";
 
 # Internal modules
 my $MODULES_DIR = get_Modules();
@@ -159,7 +159,10 @@ INFORMATION OPTIONS:
 GENERAL OPTIONS:
   -get
       Download new library versions.
-      
+  
+  -get-old
+      Download old packages from OldSourceUrl option of the profile.
+  
   -build
       Build library versions.
   
@@ -198,6 +201,7 @@ my $Profile_Path;
 my $Profile;
 my $DB;
 my $TARGET_LIB;
+my $TARGET_TITLE;
 my $C_FLAGS;
 my $CXX_FLAGS;
 
@@ -757,7 +761,7 @@ sub getPackage($$$)
         return -1;
     }
     
-    printMsg("INFO", "Downloading package \'$P\'");
+    printMsg("INFO", "Downloading package \'$P\' ($TARGET_TITLE)");
     
     if($Debug) {
         printMsg("INFO", "Link: \'$Link\'");
@@ -1101,7 +1105,7 @@ sub getLinks($)
             $Links4{linkSum($Url, $1)} = 1;
         }
         while($Line=~s/(src|href)\s*\=\s*([^"'<>\s]+?)[ >]//i) {
-            $Links2{linkSum($Url, $2)} = 1;
+            $Links5{linkSum($Url, $2)} = 1;
         }
     }
     
@@ -1639,7 +1643,8 @@ sub findChangelog($)
     
     foreach my $Name ("NEWS", "CHANGES", "CHANGES.txt", "RELEASE_NOTES", "ChangeLog", "ChangeLog.md", "Changelog",
     "changelog", "RELEASE_NOTES.md", "CHANGELOG.md", "CHANGELOG.txt", "RELEASE_NOTES.markdown", "NEWS.md",
-    "CHANGES.md", "changes.txt", "changes", "CHANGELOG", "RELEASE-NOTES", "WHATSNEW", "CHANGE_LOG", "doc/ChangeLog")
+    "CHANGES.md", "changes.txt", "changes", "CHANGELOG", "RELEASE-NOTES", "WHATSNEW", "CHANGE_LOG", "doc/ChangeLog",
+    "ChangeLog.txt")
     {
         if(-f $Dir."/".$Name
         and (-s $Dir."/".$Name > $MIN_LOG))
@@ -2599,7 +2604,7 @@ sub buildShared($)
         }
         
         chdir($To);
-        my $Cmd_B = $GCC." -nostdlib -shared -o \"$Object_S\" -Wl,--whole-archive \"$Object_A\"";
+        my $Cmd_B = $GCC." -shared -o \"$Object_S\" -Wl,--whole-archive \"$Object_A\" -Wl,--no-whole-archive"; # -nostdlib
         qx/$Cmd_B/;
         
         if($? or not -f $Object_S)
@@ -2776,6 +2781,11 @@ sub scenario()
     
     $TARGET_LIB = $Profile->{"Name"};
     $DB_PATH = "db/".$TARGET_LIB."/".$DB_PATH;
+    
+    $TARGET_TITLE = $TARGET_LIB;
+    if($Profile->{"Title"}) {
+        $TARGET_TITLE = $Profile->{"Title"};
+    }
     
     $DB = readDB($DB_PATH);
     

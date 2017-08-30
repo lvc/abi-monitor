@@ -328,6 +328,52 @@ sub skipVersion(@)
         }
     }
     
+    if(defined $Profile->{"KeepMiniMult"})
+    {
+        my @KeepMult = @{$Profile->{"KeepMiniMult"}};
+        
+        if(my $Mini = getVerNum($V, 2))
+        {
+            my $Keep = 0;
+            
+            foreach my $K (@KeepMult)
+            {
+                if($Mini % $K == 0)
+                {
+                    $Keep = 1;
+                    last;
+                }
+            }
+            
+            if(not $Keep) {
+                return 1;
+            }
+        }
+    }
+    
+    if(defined $Profile->{"KeepMicroMult"})
+    {
+        my @KeepMult = @{$Profile->{"KeepMicroMult"}};
+        
+        if(my $Micro = getVerNum($V, 3))
+        {
+            my $Keep = 0;
+            
+            foreach my $K (@KeepMult)
+            {
+                if($Micro % $K == 0)
+                {
+                    $Keep = 1;
+                    last;
+                }
+            }
+            
+            if(not $Keep) {
+                return 1;
+            }
+        }
+    }
+    
     if(defined $Profile->{"SkipOdd"})
     {
         if($V=~/\A\d+\.(\d+)/)
@@ -536,6 +582,17 @@ sub getMajor($$)
         return join(".", splice(@P, 0, $L));
     }
     return $V;
+}
+
+sub getVerNum($$)
+{
+    my ($V, $N) = @_;
+    
+    $V=~s/[\-_]/./g;
+    
+    my @P = split(/\./, $V);
+    
+    return $P[$N-1];
 }
 
 sub getVDepth($) {

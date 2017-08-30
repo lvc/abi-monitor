@@ -142,7 +142,7 @@ sub extractPackage($$)
 {
     my ($Path, $OutDir) = @_;
     
-    if($Path=~/\.(tar\.\w+|tgz|tbz2)\Z/i) {
+    if($Path=~/\.(tar\.\w+|tgz|tbz2|txz)\Z/i) {
         return "tar -xf $Path --directory=$OutDir";
     }
     elsif($Path=~/\.zip\Z/i) {
