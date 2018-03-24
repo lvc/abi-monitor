@@ -4,7 +4,7 @@
 # A tool to monitor new versions of a software library, build them
 # and create profile for ABI Tracker.
 #
-# Copyright (C) 2015-2017 Andrey Ponomarenko's ABI Laboratory
+# Copyright (C) 2015-2018 Andrey Ponomarenko's ABI Laboratory
 #
 # Written by Andrey Ponomarenko
 #
@@ -15,25 +15,27 @@
 # REQUIREMENTS
 # ============
 #  Perl 5
-#  cURL
+#  curl
 #  wget
 #  CMake
 #  Automake
 #  GCC
 #  G++
 #
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License or the GNU Lesser
-# General Public License as published by the Free Software Foundation.
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of the GNU Lesser General Public
+# License as published by the Free Software Foundation; either
+# version 2.1 of the License, or (at your option) any later version.
 #
-# This program is distributed in the hope that it will be useful,
+# This library is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# Lesser General Public License for more details.
 #
-# You should have received a copy of the GNU General Public License
-# and the GNU Lesser General Public License along with this program.
-# If not, see <http://www.gnu.org/licenses/>.
+# You should have received a copy of the GNU Lesser General Public
+# License along with this library; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
+# MA  02110-1301 USA
 ##################################################################
 use Getopt::Long;
 Getopt::Long::Configure ("posix_default", "no_ignore_case", "permute");
@@ -909,7 +911,7 @@ sub getPackages(@)
         {
             ($P, $V, $E) = ($2, $3, $5);
         }
-        elsif($Link=~/(archive|get)\/(|\w+\/)v?([\d\.\-\_]+([ab]\d*|alpha\d*|beta\d*|rc\d*|stable|))(\-src|\-source|\Q$Suffix\E|)\.(tar\.gz)/i)
+        elsif($Link=~/(archive|get)\/(|\w+\/)[v_]*([\d\.\-\_]+?([ab]\d*|alpha\d*|beta\d*|rc\d*|stable|))(\-src|\-source|\Q$Suffix\E|)\.(tar\.gz)/i)
         { # github
           # bitbucket
             ($V, $E) = ($3, $6);
@@ -917,6 +919,13 @@ sub getPackages(@)
         elsif($Link=~/\/archive\.($PKG_EXT)\?ref=(.+)\Z/i)
         { # gitlab
             ($V, $E) = ($2, $1);
+        }
+        
+        if($E and defined $Profile->{"SkipExt"})
+        {
+            if(grep {$_ eq $E} @{$Profile->{"SkipExt"}}) {
+                next;
+            }
         }
         
         if(not $V or not $E) {
@@ -1237,7 +1246,12 @@ sub linkSum($$)
     elsif(index($Path, "/")==0) {
         return getSite($Page).$Path;
     }
-    elsif($Page=~/\/\Z/) {
+    elsif($Page=~/\/\Z/)
+    {
+        #if($Path=~/\//) {
+        #    return getSite($Page)."/".$Path;
+        #}
+        
         return $Page.$Path;
     }
     
@@ -1854,8 +1868,12 @@ sub autoBuild($$$)
     
     if($Autotools)
     {
+        my $ConfScript = readFile("configure");
         my $ConfigLog = "$LogDir/configure";
-        my $Cmd_C = "./configure --enable-shared";
+        my $Cmd_C = "./configure";
+        if($ConfScript=~/enable-shared/) {
+            $Cmd_C .= " --enable-shared";
+        }
         $Cmd_C .= " --prefix=\"$To\"";
         $Cmd_C .= " CFLAGS=\"$C_FLAGS\" CXXFLAGS=\"$CXX_FLAGS\"";
         
