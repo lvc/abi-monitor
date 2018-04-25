@@ -135,7 +135,7 @@ NAME:
   Monitor and build new versions of a C/C++ software library
 
 DESCRIPTION:
-  ABI Tracker is a tool to monitor new versions of a software
+  ABI Monitor is a tool to monitor new versions of a software
   library, try to build them and create profile for ABI Tracker.
   
   The tool is intended to be used with the ABI Tracker tool for
