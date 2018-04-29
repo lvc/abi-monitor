@@ -26,12 +26,16 @@ Install
 ###### Requires
 
 * Perl 5 (5.8 or newer)
+* perl-Data-Dumper
 * curl
 * wget
-* CMake
-* Automake
-* GCC
-* G++
+
+###### Recommends
+* cmake
+* autotools
+* meson
+* gcc
+* g++
 
 Usage
 -----

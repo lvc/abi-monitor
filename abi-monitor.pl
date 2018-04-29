@@ -12,15 +12,20 @@
 # =========
 #  Linux (x86, x86_64)
 #
-# REQUIREMENTS
-# ============
+# REQUIRES
+# ========
 #  Perl 5
+#  perl-Data-Dumper
 #  curl
 #  wget
-#  CMake
-#  Automake
-#  GCC
-#  G++
+#
+# RECOMMENDS
+# ==========
+#  cmake
+#  autotools
+#  meson
+#  gcc
+#  g++
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -91,8 +96,8 @@ my %ERROR_CODE = (
 
 my $ShortUsage = "ABI Monitor $TOOL_VERSION
 A tool to monitor new versions of a software library
-Copyright (C) 2017 Andrey Ponomarenko's ABI Laboratory
-License: GPL or LGPL
+Copyright (C) 2018 Andrey Ponomarenko's ABI Laboratory
+License: GNU LGPLv2.1+
 
 Usage: $CmdName [options] [profile]
 Example:
@@ -142,7 +147,7 @@ DESCRIPTION:
   visualizing API/ABI changes timeline.
 
   This tool is free software: you can redistribute it and/or
-  modify it under the terms of the GNU LGPL or GNU GPL.
+  modify it under the terms of the GNU LGPLv2.1+.
 
 USAGE:
   $CmdName [options] [profile]
@@ -911,7 +916,7 @@ sub getPackages(@)
         {
             ($P, $V, $E) = ($2, $3, $5);
         }
-        elsif($Link=~/(archive|get)\/(|\w+\/)[v_]*([\d\.\-\_]+?([ab]\d*|alpha\d*|beta\d*|rc\d*|stable|))(\-src|\-source|\Q$Suffix\E|)\.(tar\.gz)/i)
+        elsif($Link=~/(archive|get)\/(|\w+\/)[v_]*([\d\.\-\_]+?([ab]\d*|alpha\.?\d*|beta\.?\d*|rc\d*|stable|))(\-src|\-source|\Q$Suffix\E|)\.(tar\.gz)/i)
         { # github
           # bitbucket
             ($V, $E) = ($3, $6);
@@ -951,10 +956,6 @@ sub getPackages(@)
             next;
         }
         
-        if($V=~/snapshot/i) {
-            next;
-        }
-        
         if(getVersionType($V, $Profile) eq "unknown") {
             next;
         }
@@ -964,6 +965,10 @@ sub getPackages(@)
             $V = $Release;
         }
         
+        if($V=~/snapshot/i) {
+            next;
+        }
+        
         if(skipVersion($V, $Profile)) {
             next;
         }
@@ -971,6 +976,13 @@ sub getPackages(@)
         if(defined $TargetVersion)
         {
             if($TargetVersion ne $V) {
+                next;
+            }
+        }
+        
+        if(defined $Profile->{"MinimalDownload"})
+        {
+            if(cmpVersions_P($V, $Profile->{"MinimalDownload"}, $Profile)==-1) {
                 next;
             }
         }
@@ -1710,7 +1722,7 @@ sub autoBuild($$$)
     
     my @Files = listDir(".");
     
-    my ($CMake, $Autotools, $Scons, $Waf) = (0, 0, 0, 0);
+    my ($CMake, $Autotools, $Meson, $Scons, $Waf) = (0, 0, 0, 0, 0);
     
     my ($Configure, $Autogen, $Bootstrap, $Buildconf) = (0, 0, 0, 0);
     
@@ -1748,12 +1760,25 @@ sub autoBuild($$$)
         elsif($File eq "waf") {
             $Waf = 1;
         }
+        elsif($File eq "meson.build") {
+            $Meson = 1;
+        }
     }
     
-    if($Autotools) {
+    
+    if($Autotools)
+    {
         $CMake = 0;
+        $Meson = 0;
     }
-    elsif($CMake) {
+    elsif($CMake)
+    {
+        $Autotools = 0;
+        $Meson = 0;
+    }
+    elsif($Meson)
+    {
+        $CMake = 0;
         $Autotools = 0;
     }
     
@@ -1763,11 +1788,19 @@ sub autoBuild($$$)
         {
             $CMake = 1;
             $Autotools = 0;
+            $Meson = 0;
         }
         elsif($Profile->{"BuildSystem"} eq "Autotools")
         {
             $CMake = 0;
             $Autotools = 1;
+            $Meson = 0;
+        }
+        elsif($Profile->{"BuildSystem"} eq "Meson")
+        {
+            $CMake = 0;
+            $Autotools = 0;
+            $Meson = 1;
         }
     }
     
@@ -1852,6 +1885,12 @@ sub autoBuild($$$)
                 $ConfigureKey = "AutotoolsConfigure";
             }
         }
+        elsif($Meson)
+        {
+            if(defined $Profile->{"MesonConfigure"}) {
+                $ConfigureKey = "MesonConfigure";
+            }
+        }
     }
     
     my $ConfigOptions = $Profile->{$ConfigureKey};
@@ -1868,9 +1907,10 @@ sub autoBuild($$$)
     
     if($Autotools)
     {
-        my $ConfScript = readFile("configure");
         my $ConfigLog = "$LogDir/configure";
         my $Cmd_C = "./configure";
+        
+        my $ConfScript = readFile("configure");
         if($ConfScript=~/enable-shared/) {
             $Cmd_C .= " --enable-shared";
         }
@@ -1937,6 +1977,39 @@ sub autoBuild($$$)
             printMsg("ERROR", "see error log in '$LogDir_R/cmake'");
             return 0;
         }
+    }
+    elsif($Meson)
+    {
+        my $ConfigLog = "$LogDir/meson";
+        my $BDir = "meson_build";
+        
+        my $Cmd_C = "CFLAGS=\"$C_FLAGS\" CXXFLAGS=\"$CXX_FLAGS\" meson . $BDir --prefix=\"$To\" --buildtype=plain";
+        
+        my $MesonOptions = readFile("meson_options.txt");
+        while($MesonOptions=~/'(docs|enable\-docs|documentation|enable\-documentation|enable_docs|introspection|tests|enable\-tests|vapi|udev_rules|systemd|bash_completion|man|enable\-man)'/g) {
+            $Cmd_C .= " -D$1=false";
+        }
+        
+        if($ConfigOptions) {
+            $Cmd_C .= " ".$ConfigOptions;
+        }
+        
+        if($ConfigGlobalVars) {
+            $Cmd_C = $ConfigGlobalVars." ".$Cmd_C;
+        }
+        
+        writeFile($ConfigLog, $Cmd_C."\n\n");
+        $Cmd_C .= " >>\"$ConfigLog\" 2>&1";
+        
+        qx/$Cmd_C/; # execute
+        if($?)
+        {
+            printMsg("ERROR", "failed to 'meson'");
+            printMsg("ERROR", "see error log in '$LogDir_R/meson'");
+            return 0;
+        }
+        
+        chdir($BDir);
     }
     elsif($Scons)
     {
@@ -2067,6 +2140,49 @@ sub autoBuild($$$)
             }
         }
     }
+    elsif($Meson)
+    {
+        my $Cmd_M = "ninja";
+        my $MakeLog = "$LogDir/ninja";
+        
+        if($MakeOptions) {
+            $Cmd_M .= " ".$MakeOptions;
+        }
+        if($MakeGlobalVars) {
+            $Cmd_M = $MakeGlobalVars." ".$Cmd_M;
+        }
+        
+        writeFile($MakeLog, $Cmd_M."\n\n");
+        $Cmd_M .= " >>$MakeLog 2>&1";
+        
+        qx/$Cmd_M/; # execute
+        if($?)
+        {
+            printMsg("ERROR", "failed to 'ninja'");
+            printMsg("ERROR", "see error log in '$LogDir_R/ninja'");
+            return 0;
+        }
+        
+        if(not defined $Profile->{"Install"}
+        or $Profile->{"Install"} eq "On")
+        {
+            my $Cmd_I = "ninja install";
+            
+            if($InstallGlobalVars) {
+                $Cmd_I = $InstallGlobalVars." ".$Cmd_I;
+            }
+            
+            $Cmd_I .= " >$LogDir/install 2>&1";
+            
+            qx/$Cmd_I/; # execute
+            if($?)
+            {
+                printMsg("ERROR", "failed to 'ninja install'");
+                printMsg("ERROR", "see error log in '$LogDir_R/install'");
+                return 0;
+            }
+        }
+    }
     elsif($Waf)
     {
         my $Cmd_M = "./waf build";
@@ -2099,7 +2215,7 @@ sub autoBuild($$$)
         }
     }
     
-    if($CMake) {
+    if($CMake or $Meson) {
         chdir("..");
     }
     
