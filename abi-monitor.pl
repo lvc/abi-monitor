@@ -69,15 +69,17 @@ my $PKG_EXT = "tar\\.bz2|tar\\.gz|tar\\.xz|tar\\.lzma|tar\\.lz|tar\\.Z|tbz2|tgz|
 my $MODULES_DIR = get_Modules();
 push(@INC, dirname($MODULES_DIR));
 
+# Basic modules
+my %LoadedModules = ();
+loadModule("Basic");
+loadModule("Input");
+loadModule("CmpVersions");
+
 my $CMAKE = "cmake";
 my $GCC = "gcc";
 
 my $C_FLAGS_B = "-g -Og -w -fpermissive";
 my $CXX_FLAGS_B = $C_FLAGS_B;
-
-my ($Help, $DumpVersion, $Get, $Build, $Rebuild, $OutputProfile,
-$TargetVersion, $LimitOps, $BuildShared, $BuildNew, $Debug, $GetOld,
-$MakeAddOpt);
 
 my $CmdName = basename($0);
 my $ORIG_DIR = cwd();
@@ -111,21 +113,21 @@ if($#ARGV==-1)
     exit(0);
 }
 
-GetOptions("h|help!" => \$Help,
-  "dumpversion!" => \$DumpVersion,
+GetOptions("h|help!" => \$In::Opt{"Help"},
+  "dumpversion!" => \$In::Opt{"DumpVersion"},
 # general options
-  "get!" => \$Get,
-  "get-old!" => \$GetOld,
-  "build!" => \$Build,
-  "rebuild!" => \$Rebuild,
-  "limit=s" => \$LimitOps,
-  "v=s" => \$TargetVersion,
-  "output=s" => \$OutputProfile,
-  "build-shared!" => \$BuildShared,
-  "build-new!" => \$BuildNew,
-  "debug!" => \$Debug,
+  "get!" => \$In::Opt{"Get"},
+  "get-old!" => \$In::Opt{"GetOld"},
+  "build!" => \$In::Opt{"Build"},
+  "rebuild!" => \$In::Opt{"Rebuild"},
+  "limit=s" => \$In::Opt{"LimitOps"},
+  "v=s" => \$In::Opt{"TargetVersion"},
+  "output=s" => \$In::Opt{"OutputProfile"},
+  "build-shared!" => \$In::Opt{"BuildShared"},
+  "build-new!" => \$In::Opt{"BuildNew"},
+  "debug!" => \$In::Opt{"Debug"},
 # other options
-  "make=s" => \$MakeAddOpt
+  "make=s" => \$In::Opt{"MakeAddOpt"}
 ) or ERR_MESSAGE();
 
 sub ERR_MESSAGE()
@@ -242,11 +244,15 @@ sub get_Modules()
 sub loadModule($)
 {
     my $Name = $_[0];
+    if(defined $LoadedModules{$Name}) {
+        return;
+    }
     my $Path = $MODULES_DIR."/Internals/$Name.pm";
     if(not -f $Path) {
         exitStatus("Module_Error", "can't access \'$Path\'");
     }
     require $Path;
+    $LoadedModules{$Name} = 1;
 }
 
 sub readModule($$)
@@ -573,7 +579,7 @@ sub getVersions_Local()
 sub getVersions()
 {
     my $SourceTag = "SourceUrl";
-    if($GetOld) {
+    if($In::Opt{"GetOld"}) {
         $SourceTag = "OldSourceUrl";
     }
     
@@ -588,7 +594,7 @@ sub getVersions()
         return;
     }
     
-    if($GetOld) {
+    if($In::Opt{"GetOld"}) {
         printMsg("INFO", "Searching for old source packages");
     }
     else {
@@ -616,7 +622,7 @@ sub getVersions()
     
     my $Depth = 2;
     
-    if($GetOld)
+    if($In::Opt{"GetOld"})
     {
         if(defined $Profile->{"OldSourceUrlDepth"})
         { # More steps into directory tree
@@ -668,9 +674,9 @@ sub getVersions()
             $NumOp += 1;
         }
         
-        if(defined $LimitOps)
+        if(defined $In::Opt{"LimitOps"})
         {
-            if($NumOp>=$LimitOps)
+            if($NumOp>=$In::Opt{"LimitOps"})
             {
                 last;
             }
@@ -770,7 +776,7 @@ sub getPackage($$$)
     
     printMsg("INFO", "Downloading package \'$P\' ($TARGET_TITLE)");
     
-    if($Debug) {
+    if($In::Opt{"Debug"}) {
         printMsg("INFO", "Link: \'$Link\'");
     }
     
@@ -973,9 +979,9 @@ sub getPackages(@)
             next;
         }
         
-        if(defined $TargetVersion)
+        if(defined $In::Opt{"TargetVersion"})
         {
-            if($TargetVersion ne $V) {
+            if($In::Opt{"TargetVersion"} ne $V) {
                 next;
             }
         }
@@ -1038,7 +1044,7 @@ sub getPages($$)
         {
             if(skipOldLink($DirVer))
             {
-                if($Debug) {
+                if($In::Opt{"Debug"}) {
                     printMsg("INFO", "Skip (Old dir): $Link");
                 }
                 next;
@@ -1094,7 +1100,7 @@ sub getLinks($)
     my $PageRef = $_[0];
     my $Page = ${$PageRef};
     
-    if($Debug) {
+    if($In::Opt{"Debug"}) {
         printMsg("INFO", "Reading ".$Page);
     }
     
@@ -1159,7 +1165,7 @@ sub getLinks($)
     {
         if(skipUrl($Link))
         {
-            if($Debug) {
+            if($In::Opt{"Debug"}) {
                 printMsg("INFO", "Skip: $Link");
             }
             next;
@@ -1290,7 +1296,7 @@ sub buildVersions()
         }
     }
     
-    if(defined $BuildNew)
+    if(defined $In::Opt{"BuildNew"})
     {
         if(not defined $DB->{"Installed"}{"current"})
         { # NOTE: try to build current again
@@ -1306,14 +1312,14 @@ sub buildVersions()
     
     foreach my $V (@Versions)
     {
-        if(defined $TargetVersion)
+        if(defined $In::Opt{"TargetVersion"})
         {
-            if($TargetVersion ne $V) {
+            if($In::Opt{"TargetVersion"} ne $V) {
                 next;
             }
         }
         
-        if(defined $BuildNew)
+        if(defined $In::Opt{"BuildNew"})
         {
             if(not defined $NewVer{$V}) {
                 next;
@@ -1331,9 +1337,9 @@ sub buildVersions()
             $NumOp += 1;
         }
         
-        if(defined $LimitOps)
+        if(defined $In::Opt{"LimitOps"})
         {
-            if($NumOp>=$LimitOps)
+            if($NumOp>=$In::Opt{"LimitOps"})
             {
                 last;
             }
@@ -1349,7 +1355,7 @@ sub buildVersions()
 
 sub createProfile()
 {
-    my $To = $OutputProfile;
+    my $To = $In::Opt{"OutputProfile"};
     if(not $To) {
         $To = $Profile_Path;
     }
@@ -1986,7 +1992,7 @@ sub autoBuild($$$)
         my $Cmd_C = "CFLAGS=\"$C_FLAGS\" CXXFLAGS=\"$CXX_FLAGS\" meson . $BDir --prefix=\"$To\" --buildtype=plain";
         
         my $MesonOptions = readFile("meson_options.txt");
-        while($MesonOptions=~/'(docs|enable\-docs|documentation|enable\-documentation|enable_docs|introspection|tests|enable\-tests|vapi|udev_rules|systemd|bash_completion|man|enable\-man)'/g) {
+        while($MesonOptions=~/'(docs|enable\-docs|documentation|enable\-documentation|enable_docs|introspection|tests|enable\-tests|build\-tests|vapi|udev_rules|systemd|bash_completion|enable\-bash\-completion|man|enable\-man|enable\-systemd|enable\-vala|demos|enable\-udev\-rules)'/g) {
             $Cmd_C .= " -D$1=false";
         }
         
@@ -2072,8 +2078,8 @@ sub autoBuild($$$)
     
     my $MakeOptions = $Profile->{"Make"};
     
-    if($MakeAddOpt) {
-        $MakeOptions = $MakeAddOpt;
+    if($In::Opt{"MakeAddOpt"}) {
+        $MakeOptions = $In::Opt{"MakeAddOpt"};
     }
     
     $MakeOptions = addParams($MakeOptions, $To, $V);
@@ -2410,7 +2416,7 @@ sub buildPackage($$)
 {
     my ($Package, $V) = @_;
     
-    if(not $Rebuild)
+    if(not $In::Opt{"Rebuild"})
     {
         if(defined $DB->{"Installed"}{$V})
         {
@@ -2858,24 +2864,24 @@ sub scenario()
     
     $SIG{INT} = \&safeExit;
     
-    if($Rebuild or $BuildNew) {
-        $Build = 1;
+    if($In::Opt{"Rebuild"} or $In::Opt{"BuildNew"}) {
+        $In::Opt{"Build"} = 1;
     }
     
-    if(defined $LimitOps)
+    if(defined $In::Opt{"LimitOps"})
     {
-        if($LimitOps<=0) {
+        if($In::Opt{"LimitOps"}<=0) {
             exitStatus("Error", "the value of -limit option should be a positive integer");
         }
     }
     
-    if($DumpVersion)
+    if($In::Opt{"DumpVersion"})
     {
         printMsg("INFO", $TOOL_VERSION);
         exit(0);
     }
     
-    if($Help)
+    if($In::Opt{"Help"})
     {
         printMsg("INFO", $HelpMessage);
         exit(0);
@@ -2894,9 +2900,6 @@ sub scenario()
     if(not -e $Profile_Path) {
         exitStatus("Access_Error", "can't access \'$Profile_Path\'");
     }
-    
-    loadModule("Basic");
-    loadModule("CmpVersions");
     
     $Profile = readProfile(readFile($Profile_Path));
     
@@ -2926,11 +2929,11 @@ sub scenario()
     checkDB();
     checkFiles();
     
-    if($GetOld) {
+    if($In::Opt{"GetOld"}) {
         getVersions();
     }
     
-    if($Get)
+    if($In::Opt{"Get"})
     {
         getVersions_Local();
         getVersions();
@@ -2943,15 +2946,15 @@ sub scenario()
         }
     }
     
-    if($Build) {
+    if($In::Opt{"Build"}) {
         buildVersions();
     }
     
-    if($BuildShared)
+    if($In::Opt{"BuildShared"})
     {
-        if(defined $TargetVersion)
+        if(defined $In::Opt{"TargetVersion"})
         {
-            buildShared($TargetVersion);
+            buildShared($In::Opt{"TargetVersion"});
         }
         else {
             print STDERR "ERROR: target version should be specified to build shared objects from static ones\n";
