@@ -47,7 +47,7 @@ Getopt::Long::Configure ("posix_default", "no_ignore_case", "permute");
 use File::Path qw(mkpath rmtree);
 use File::Copy qw(copy move);
 use File::Temp qw(tempdir);
-use File::Basename qw(dirname basename);
+use File::Basename qw(dirname);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
@@ -81,7 +81,7 @@ my $GCC = "gcc";
 my $C_FLAGS_B = "-g -Og -w -fpermissive";
 my $CXX_FLAGS_B = $C_FLAGS_B;
 
-my $CmdName = basename($0);
+my $CmdName = getFilename($0);
 my $ORIG_DIR = cwd();
 
 my %ERROR_CODE = (
@@ -126,6 +126,9 @@ GetOptions("h|help!" => \$In::Opt{"Help"},
   "build-shared!" => \$In::Opt{"BuildShared"},
   "build-new!" => \$In::Opt{"BuildNew"},
   "debug!" => \$In::Opt{"Debug"},
+  "clean-unused!" => \$In::Opt{"CleanUnused"},
+  "confirm!" => \$In::Opt{"Confirm"},
+  "redownload!" => \$In::Opt{"Redownload"},
 # other options
   "make=s" => \$In::Opt{"MakeAddOpt"}
 ) or ERR_MESSAGE();
@@ -172,6 +175,9 @@ GENERAL OPTIONS:
   -get-old
       Download old packages from OldSourceUrl option of the profile.
   
+  -redownload
+      Redownload installed source packages.
+  
   -build
       Build library versions.
   
@@ -199,6 +205,10 @@ GENERAL OPTIONS:
   
   -debug
       Enable debug messages.
+  
+  -clean-unused
+      Remove unused files: sources of installed library
+      versions, unused install trees and static objects.
 
 OTHER OPTIONS:
   -make OPT
@@ -688,12 +698,17 @@ sub getVersions()
     }
 }
 
+sub getSources()
+{ # all source packages including installed/cleaned
+    return uniqueArray((keys(%{$DB->{"Source"}}), keys(%{$DB->{"Installed"}})));
+}
+
 sub getHighestRelease()
 {
     if(defined $Cache{"HighestRelease"}) {
         return $Cache{"HighestRelease"};
     }
-    my @Vers = keys(%{$DB->{"Source"}});
+    my @Vers = getSources();
     @Vers = naturalSequence($Profile, @Vers);
     @Vers = reverse(@Vers);
     
@@ -708,12 +723,29 @@ sub getHighestRelease()
     return undef;
 }
 
+sub getLatestVersion()
+{
+    if(defined $Cache{"LatestVersion"}) {
+        return $Cache{"LatestVersion"};
+    }
+    
+    if(my @Vers = getSources())
+    {
+        @Vers = naturalSequence($Profile, @Vers);
+        @Vers = reverse(@Vers);
+        
+        return ($Cache{"LatestVersion"} = $Vers[0]);
+    }
+    
+    return undef;
+}
+
 sub isOldMicro($$)
 {
     my ($V, $L) = @_;
     my $M = getMajor($V, $L);
     
-    foreach my $Ver (sort keys(%{$DB->{"Source"}}))
+    foreach my $Ver (getSources())
     {
         if(getMajor($Ver, $L) eq $M)
         {
@@ -731,9 +763,34 @@ sub getPackage($$$)
 {
     my ($Link, $P, $V) = @_;
     
+    my $Dir = $REPO."/".$TARGET_LIB."/".$V;
+    
+    if(not -e $Dir) {
+        mkpath($Dir);
+    }
+    
     if(defined $DB->{"Source"}{$V})
     { # already downloaded
         return -1;
+    }
+    
+    if(defined $DB->{"Installed"}{$V}
+    and not defined $In::Opt{"Redownload"})
+    { # Do not download installed packages to save space
+        printMsg("INFO", "Skip downloading of already installed package for $V");
+        if(not defined $Cache{"RedownloadInfo"})
+        {
+            printMsg("TIP", "Use -redownload option to download it again");
+            $Cache{"RedownloadInfo"} = 1;
+        }
+        return -1;
+    }
+    
+    if(defined $Profile->{"MinimalDownload"})
+    {
+        if(cmpVersions_P($V, $Profile->{"MinimalDownload"}, $Profile)==-1) {
+            return -1;
+        }
     }
     
     if(getVersionType($V, $Profile) ne "release")
@@ -742,6 +799,14 @@ sub getPackage($$$)
         {
             if(cmpVersions_P($V, $HighestRelease, $Profile)==-1)
             { # do not download old alfa/beta/pre releases
+                return -1;
+            }
+        }
+        
+        if(my $LatestVersion = getLatestVersion())
+        {
+            if(cmpVersions_P($V, $LatestVersion, $Profile)==-1)
+            { # do not download previous alfa/beta/pre releases
                 return -1;
             }
         }
@@ -761,12 +826,6 @@ sub getPackage($$$)
         { # do not download old nano releases
             return -1;
         }
-    }
-    
-    my $Dir = $REPO."/".$TARGET_LIB."/".$V;
-    
-    if(not -e $Dir) {
-        mkpath($Dir);
     }
     
     my $To = $Dir."/".$P;
@@ -820,8 +879,10 @@ sub getPackage($$$)
     }
     
     $DB->{"Source"}{$V} = $To;
+    
     $NewVer{$V} = 1;
     $Cache{"HighestRelease"} = undef;
+    $Cache{"LatestVersion"}  = undef;
     
     return 1;
 }
@@ -986,13 +1047,6 @@ sub getPackages(@)
             }
         }
         
-        if(defined $Profile->{"MinimalDownload"})
-        {
-            if(cmpVersions_P($V, $Profile->{"MinimalDownload"}, $Profile)==-1) {
-                next;
-            }
-        }
-        
         if($P)
         {
             $Res{$V}{"Url"} = $Link;
@@ -1035,8 +1089,12 @@ sub getPages($$)
         if($PLink=~/https:\/\/sourceforge\.net\/projects\/[^\/]+\/files\/[^\/]+\/($TARGET_LIB[\-_ ]*|)v?(\d[^\/]*?)[ _-]*(Src|Source|Sources|)\/\Z/i) {
             $DirVer = $2;
         }
+        elsif($PLink=~/\/($TARGET_LIB[\-_ ]*|)v?(\d[^\/]*?)\.($PKG_EXT)[\/]*\Z/i)
+        { # libaio-0.3.100.tar.gz/ (fedora)
+            $DirVer = $2;
+        }
         elsif($PLink=~/\/($TARGET_LIB[\-_ ]*|)v?(\d[^\/]*?)[\/]*\Z/i)
-        { # 9.1.1rc7
+        { # 9.1.1rc7/
             $DirVer = $2;
         }
         
@@ -1068,6 +1126,10 @@ sub skipOldLink($)
     }
     
     if(defined $DB->{"Source"}{$V}) {
+        return 1;
+    }
+    elsif(defined $DB->{"Installed"}{$V}
+    and not defined $In::Opt{"Redownload"}) {
         return 1;
     }
     elsif(skipVersion($V, $Profile, 0)) {
@@ -1276,6 +1338,70 @@ sub linkSum($$)
     return getDirname($Page)."/".$Path;
 }
 
+sub cleanUnused()
+{
+    printMsg("INFO", "Cleaning unused data");
+    
+    foreach my $V (sort {cmpVersions_P($b, $a, $Profile)} keys(%{$DB->{"Installed"}}))
+    {
+        if($V eq "current") {
+            next;
+        }
+        
+        my $IDir = $DB->{"Installed"}{$V};
+        
+        my @Static = findFiles($IDir, "f", ".*\\.a");
+        foreach my $F (@Static)
+        {
+            if(defined $In::Opt{"Confirm"})
+            {
+                printMsg("INFO", "Removing: $F");
+                rmtree($F);
+            }
+            else {
+                printMsg("INFO", "To remove: $F");
+            }
+        }
+        
+        if((defined $Profile->{"Versions"} and (not defined $Profile->{"Versions"}{$V}
+        or $Profile->{"Versions"}{$V}{"Deleted"})) or skipVersion($V, $Profile, 1))
+        {
+            if(defined $In::Opt{"Confirm"})
+            {
+                printMsg("INFO", "Removing: $IDir");
+                rmtree($IDir);
+            }
+            else {
+                printMsg("INFO", "To remove: $IDir");
+            }
+        }
+    }
+    
+    foreach my $V (sort {cmpVersions_P($b, $a, $Profile)} keys(%{$DB->{"Source"}}))
+    {
+        if($V eq "current") {
+            next;
+        }
+        
+        if(defined $DB->{"Installed"}{$V} or skipVersion($V, $Profile, 1)
+        or (defined $Profile->{"Versions"} and $Profile->{"Versions"}{$V}{"Deleted"}))
+        {
+            if(defined $In::Opt{"Confirm"})
+            {
+                printMsg("INFO", "Removing: ".$DB->{"Source"}{$V});
+                rmtree(getDirname($DB->{"Source"}{$V}));
+            }
+            else {
+                printMsg("INFO", "To remove: ".$DB->{"Source"}{$V});
+            }
+        }
+    }
+    
+    if(not defined $In::Opt{"Confirm"}) {
+        printMsg("INFO", "Retry with -confirm option to remove files");
+    }
+}
+
 sub buildVersions()
 {
     if(not defined $DB->{"Source"})
@@ -1308,6 +1434,23 @@ sub buildVersions()
     @Versions = naturalSequence($Profile, @Versions);
     @Versions = reverse(@Versions);
     
+    if(defined $In::Opt{"TargetVersion"})
+    {
+        if(not -e $DB->{"Source"}{$In::Opt{"TargetVersion"}})
+        {
+            printMsg("ERROR", "No source package for ".$In::Opt{"TargetVersion"});
+            return;
+        }
+        elsif(not $In::Opt{"Rebuild"} and defined $DB->{"Installed"}{$In::Opt{"TargetVersion"}})
+        {
+            if($In::Opt{"TargetVersion"} ne "current" or not defined $NewVer{"current"})
+            {
+                printMsg("INFO", "Package for ".$In::Opt{"TargetVersion"}." is already installed");
+                return;
+            }
+        }
+    }
+    
     my $NumOp = 0;
     
     foreach my $V (@Versions)
@@ -1329,6 +1472,30 @@ sub buildVersions()
         if(defined $Profile->{"Versions"} and defined $Profile->{"Versions"}{$V}
         and defined $Profile->{"Versions"}{$V}{"Deleted"}) {
             next;
+        }
+        
+        if(not $In::Opt{"Rebuild"})
+        {
+            if(defined $DB->{"Installed"}{$V})
+            {
+                if($V ne "current" or not defined $NewVer{"current"}) {
+                    next;
+                }
+            }
+        }
+        
+        if($In::Opt{"Rebuild"} or not defined $DB->{"Installed"}{$V})
+        {
+            if(not defined $DB->{"Source"}{$V})
+            {
+                printMsg("INFO", "No source package for $V");
+                if(not defined $Cache{"NoSource"})
+                {
+                    printMsg("TIP", "Redownload it by -redownload option");
+                    $Cache{"NoSource"} = 1;
+                }
+                next;
+            }
         }
         
         my $R = buildPackage($DB->{"Source"}{$V}, $V);
@@ -1367,7 +1534,7 @@ sub createProfile()
     }
     
     my @ProfileKeys = ("Name", "Title", "SourceUrl", "SourceUrlDepth", "OldSourceUrl", "OldSourceUrlDepth", "SourceDir", "SkipUrl", "Git", "Svn", "Hg", "Doc",
-    "Maintainer", "MaintainerUrl", "BuildSystem", "Configure", "CurrentConfigure", "BuildScript", "PreInstall", "CurrentPreInstall", "PostInstall", "CurrentPostInstall", "SkipObjects", "SkipHeaders", "SkipSymbols", "SkipInternalSymbols", "SkipTypes", "SkipInternalTypes");
+    "Maintainer", "MaintainerUrl", "BuildSystem", "Configure", "CurrentConfigure", "BuildScript", "BuildScenario", "PreInstall", "CurrentPreInstall", "PostInstall", "CurrentPostInstall", "SkipObjects", "SkipHeaders", "SkipSymbols", "SkipInternalSymbols", "SkipTypes", "SkipInternalTypes");
     my $MaxLen_P = 13;
     
     my %UnknownKeys = ();
@@ -2072,7 +2239,7 @@ sub autoBuild($$$)
     }
     else
     {
-        printMsg("ERROR", "unknown build system, please set \"BuildScript\" in the profile");
+        printMsg("ERROR", "unknown build system, please set \"BuildScript\" or \"BuildScenario\" in the profile");
         return 0;
     }
     
@@ -2416,36 +2583,7 @@ sub buildPackage($$)
 {
     my ($Package, $V) = @_;
     
-    if(not $In::Opt{"Rebuild"})
-    {
-        if(defined $DB->{"Installed"}{$V})
-        {
-            if($V ne "current" or not defined $NewVer{$V})
-            {
-                return -1;
-            }
-        }
-    }
-    
     printMsg("INFO", "Building \'".getFilename($Package)."\'");
-    
-    my $BuildScript = undef;
-    if(defined $Profile->{"BuildScript"})
-    {
-        $BuildScript = $Profile->{"BuildScript"};
-        
-        if(not -f $BuildScript) {
-            exitStatus("Access_Error", "can't access build script \'$BuildScript\'");
-        }
-        
-        $BuildScript = abs_path($BuildScript);
-    }
-    
-    my $LogDir_R = $BUILD_LOGS."/".$TARGET_LIB."/".$V;
-    rmtree($LogDir_R);
-    mkpath($LogDir_R);
-    
-    my $LogDir = abs_path($LogDir_R);
     
     my $InstallDir = $INSTALLED."/".$TARGET_LIB."/".$V;
     rmtree($InstallDir);
@@ -2453,6 +2591,45 @@ sub buildPackage($$)
     
     my $InstallDir_A = abs_path($InstallDir);
     my $InstallRoot_A = abs_path($INSTALLED);
+    
+    my $BuildScript = undef;
+    my $BuildScriptCode = undef;
+    
+    if(defined $Profile->{"BuildScript"})
+    {
+        if(not -f $Profile->{"BuildScript"}) {
+            exitStatus("Access_Error", "can't access build script \'".$Profile->{"BuildScript"}."\'");
+        }
+        $BuildScriptCode = addParams(readFile($Profile->{"BuildScript"}), $InstallDir_A, $V);
+    }
+    elsif(defined $Profile->{"BuildScenario"}) {
+        $BuildScriptCode = addParams($Profile->{"BuildScenario"}, $InstallDir_A, $V);
+    }
+    
+    if($BuildScriptCode)
+    {
+        my $PreInstall = $Profile->{"PreInstall"};
+        
+        if($V eq "current")
+        {
+            if(defined $Profile->{"CurrentPreInstall"}) {
+                $PreInstall = $Profile->{"CurrentPreInstall"};
+            }
+        }
+        
+        if($PreInstall) {
+            $BuildScriptCode = $PreInstall."\n".$BuildScriptCode;
+        }
+        
+        $BuildScript = $TMP_DIR."/build_script.sh";
+        writeFile($BuildScript, $BuildScriptCode);
+    }
+    
+    my $LogDir_R = $BUILD_LOGS."/".$TARGET_LIB."/".$V;
+    rmtree($LogDir_R);
+    mkpath($LogDir_R);
+    
+    my $LogDir = abs_path($LogDir_R);
     
     local $SIG{INT} = sub
     {
@@ -2868,6 +3045,10 @@ sub scenario()
         $In::Opt{"Build"} = 1;
     }
     
+    if($In::Opt{"Redownload"}) {
+        $In::Opt{"Get"} = 1;
+    }
+    
     if(defined $In::Opt{"LimitOps"})
     {
         if($In::Opt{"LimitOps"}<=0) {
@@ -2928,6 +3109,10 @@ sub scenario()
     
     checkDB();
     checkFiles();
+    
+    if($In::Opt{"CleanUnused"}) {
+        cleanUnused();
+    }
     
     if($In::Opt{"GetOld"}) {
         getVersions();

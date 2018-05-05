@@ -521,7 +521,7 @@ sub getVersionType($$)
     }
     
     my @Words = ();
-    while($Version=~s/(\A|[^a-z])([a-z]+)([^a-z]|\Z)/$1$3/i) {
+    while($Version=~/(\A|[^a-z])([a-z]+)([^a-z]|\Z)/gi) {
         push(@Words, $2);
     }
     
