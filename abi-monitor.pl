@@ -185,7 +185,7 @@ GENERAL OPTIONS:
       Re-build library versions.
   
   -limit NUM
-      Limit number of operations to NUM. This is usefull if
+      Limit number of operations to NUM. This is useful if
       you want to download or build only NUM packages.
   
   -v NUM
@@ -967,7 +967,7 @@ sub getPackages(@)
         $Pkg = $Profile->{"Package"};
     }
     
-    if($Pkg=~/\A(.+)\{V\}(.+)\Z/) {
+    if($Pkg=~/\A(.*)\{V\}(.*)\Z/) {
         ($Pkg, $Suffix) = ($1, $2);
     }
     
@@ -983,7 +983,7 @@ sub getPackages(@)
         {
             ($P, $V, $E) = ($2, $3, $5);
         }
-        elsif($Link=~/(archive|get)\/(|\w+\/)[v_]*([\d\.\-\_]+?([ab]\d*|alpha\.?\d*|beta\.?\d*|rc\d*|stable|))(\-src|\-source|\Q$Suffix\E|)\.(tar\.gz)/i)
+        elsif($Link=~/(archive|get)\/(|\w+\/)[v_]*([\d\.\-\_]+?([ab]\d*|alpha\.?\d*|beta\.?\d*|rc\d*|stable|release|))(\-src|\-source|\Q$Suffix\E|)\.(tar\.gz)/i)
         { # github
           # bitbucket
             ($V, $E) = ($3, $6);
@@ -1534,7 +1534,7 @@ sub createProfile()
     }
     
     my @ProfileKeys = ("Name", "Title", "SourceUrl", "SourceUrlDepth", "OldSourceUrl", "OldSourceUrlDepth", "SourceDir", "SkipUrl", "Git", "Svn", "Hg", "Doc",
-    "Maintainer", "MaintainerUrl", "BuildSystem", "Configure", "CurrentConfigure", "BuildScript", "BuildScenario", "PreInstall", "CurrentPreInstall", "PostInstall", "CurrentPostInstall", "SkipObjects", "SkipHeaders", "SkipSymbols", "SkipInternalSymbols", "SkipTypes", "SkipInternalTypes");
+    "Maintainer", "MaintainerUrl", "BuildSystem", "Configure", "CurrentConfigure", "BuildScript", "BuildScenario", "InstallScenario", "PreInstall", "CurrentPreInstall", "PostInstall", "CurrentPostInstall", "SkipObjects", "SkipHeaders", "SkipSymbols", "SkipInternalSymbols", "SkipTypes", "SkipInternalTypes");
     my $MaxLen_P = 13;
     
     my %UnknownKeys = ();
@@ -2618,7 +2618,7 @@ sub buildPackage($$)
         }
         
         if($PreInstall) {
-            $BuildScriptCode = $PreInstall."\n".$BuildScriptCode;
+            $BuildScriptCode = addParams($PreInstall, $InstallDir_A, $V)."\n".$BuildScriptCode;
         }
         
         $BuildScript = $TMP_DIR."/build_script.sh";
@@ -2687,7 +2687,7 @@ sub buildPackage($$)
     
     while(1)
     {
-        my @Files = listDir(".");
+        my @Files = grep { $_!~/\A\./ } listDir(".");
         if($#Files==0 and -d $Files[0])
         { # one step deeper
             chdir($Files[0]);
@@ -2852,7 +2852,7 @@ sub buildPackage($$)
                 }
                 
                 my %Opts = ();
-                while($Producer=~s/(\A| )(\-O([0-3]|g))( |\Z)/ /) {
+                while($Producer=~s/(\A|\s)(\-O([0-3]|g))(\s|\Z)/ /) {
                     $Opts{keys(%Opts)} = $2;
                 }
                 
@@ -3086,6 +3086,12 @@ sub scenario()
     
     if(not $Profile->{"Name"}) {
         exitStatus("Error", "name of the library is not specified in profile");
+    }
+    
+    if(defined $Profile->{"InstallScenario"})
+    {
+        $Profile->{"Install"} = "Off";
+        $Profile->{"PostInstall"} = $Profile->{"InstallScenario"};
     }
     
     if(defined $Profile->{"LocalBuild"}
