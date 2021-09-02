@@ -4,7 +4,7 @@
 # A tool to monitor new versions of a software library, build them
 # and create profile for ABI Tracker.
 #
-# Copyright (C) 2015-2018 Andrey Ponomarenko's ABI Laboratory
+# Copyright (C) 2015-2019 Andrey Ponomarenko's ABI Laboratory
 #
 # Written by Andrey Ponomarenko
 #
@@ -125,12 +125,15 @@ GetOptions("h|help!" => \$In::Opt{"Help"},
   "output=s" => \$In::Opt{"OutputProfile"},
   "build-shared!" => \$In::Opt{"BuildShared"},
   "build-new!" => \$In::Opt{"BuildNew"},
+  "analyze!" => \$In::Opt{"Analyze"},
   "debug!" => \$In::Opt{"Debug"},
   "clean-unused!" => \$In::Opt{"CleanUnused"},
+  "clear-installed!" => \$In::Opt{"ClearInstalled"},
   "confirm!" => \$In::Opt{"Confirm"},
   "redownload!" => \$In::Opt{"Redownload"},
 # other options
-  "make=s" => \$In::Opt{"MakeAddOpt"}
+  "make=s" => \$In::Opt{"MakeAddOpt"},
+  "detect-deps!" => \$In::Opt{"DetectDeps"}
 ) or ERR_MESSAGE();
 
 sub ERR_MESSAGE()
@@ -209,6 +212,9 @@ GENERAL OPTIONS:
   -clean-unused
       Remove unused files: sources of installed library
       versions, unused install trees and static objects.
+
+  -clear-installed On/Off
+      Reset ClearInstalled profile option.
 
 OTHER OPTIONS:
   -make OPT
@@ -402,6 +408,7 @@ sub getCurrent()
     }
     
     my $UpToDate = 0;
+    my $NeedUpdate = 0;
     
     if(-d $CurRepo)
     {
@@ -419,6 +426,10 @@ sub getCurrent()
             
             if($Log=~/Already up\-to\-date/i) {
                 $UpToDate = 1;
+            }
+            
+            if($Log=~/Enumerating objects|Unpacking objects/i) {
+                $NeedUpdate = 1;
             }
         }
         elsif($Svn)
@@ -474,7 +485,7 @@ sub getCurrent()
     {
         if($DB->{"ScmUpdateTime"})
         {
-            if($DB->{"ScmUpdateTime"} ne $UTime) {
+            if($DB->{"ScmUpdateTime"} ne $UTime or $NeedUpdate) {
                 $NewVer{"current"} = 1;
             }
         }
@@ -499,6 +510,10 @@ sub getScmUpdateTime()
         if(defined $Profile->{"Git"})
         {
             $Head = "$Source/.git/refs/heads/master";
+            
+            if(defined $Profile->{"Branch"}) {
+                $Head = "$Source/.git/refs/heads/".$Profile->{"Branch"};
+            }
             
             if(not -f $Head)
             { # is not updated yet
@@ -698,9 +713,11 @@ sub getVersions()
     }
 }
 
-sub getSources()
+sub getKnownVersions()
 { # all source packages including installed/cleaned
-    return uniqueArray((keys(%{$DB->{"Source"}}), keys(%{$DB->{"Installed"}})));
+    my @List = uniqueArray((keys(%{$DB->{"Source"}}), keys(%{$DB->{"Installed"}}), keys(%{$Profile->{"Versions"}})));
+    
+    return grep { $_ ne "current" } @List;
 }
 
 sub getHighestRelease()
@@ -708,7 +725,7 @@ sub getHighestRelease()
     if(defined $Cache{"HighestRelease"}) {
         return $Cache{"HighestRelease"};
     }
-    my @Vers = getSources();
+    my @Vers = getKnownVersions();
     @Vers = naturalSequence($Profile, @Vers);
     @Vers = reverse(@Vers);
     
@@ -729,7 +746,7 @@ sub getLatestVersion()
         return $Cache{"LatestVersion"};
     }
     
-    if(my @Vers = getSources())
+    if(my @Vers = getKnownVersions())
     {
         @Vers = naturalSequence($Profile, @Vers);
         @Vers = reverse(@Vers);
@@ -745,11 +762,11 @@ sub isOldMicro($$)
     my ($V, $L) = @_;
     my $M = getMajor($V, $L);
     
-    foreach my $Ver (getSources())
+    foreach my $Ver (getKnownVersions())
     {
         if(getMajor($Ver, $L) eq $M)
         {
-            if(cmpVersions_P($Ver, $V, $Profile)>=0)
+            if(cmpVersions_P($Ver, $V, $Profile)>0)
             {
                 return 1;
             }
@@ -759,25 +776,75 @@ sub isOldMicro($$)
     return 0;
 }
 
+sub isOldVer($)
+{
+    my $V = $_[0];
+    
+    if(defined $Profile->{"LatestMinor"})
+    {
+        if(isOldMicro($V, 1))
+        { # do not download old minor releases
+            return 1;
+        }
+    }
+    
+    if(defined $Profile->{"LatestMicro"})
+    {
+        if(isOldMicro($V, 2))
+        { # do not download old micro releases
+            return 1;
+        }
+    }
+    
+    if(defined $Profile->{"LatestNano"})
+    {
+        if(isOldMicro($V, 3))
+        { # do not download old nano releases
+            return 1;
+        }
+    }
+    
+    return 0;
+}
+
+sub notNeededSrc($)
+{
+    my $V = $_[0];
+    
+    if(-d "abi_dump/".$TARGET_LIB."/".$V) {
+        return "dumped";
+    }
+    elsif(defined $DB->{"Installed"}{$V}) {
+        return "installed";
+    }
+    elsif(defined $Profile->{"Versions"}{$V}
+    and $Profile->{"Versions"}{$V}{"Deleted"}) {
+        return "deleted";
+    }
+    elsif(isOldVer($V))
+    { # old micro/nano releases
+        return "obsoleted";
+    }
+    
+    return undef;
+}
+
 sub getPackage($$$)
 {
     my ($Link, $P, $V) = @_;
     
     my $Dir = $REPO."/".$TARGET_LIB."/".$V;
     
-    if(not -e $Dir) {
-        mkpath($Dir);
-    }
-    
     if(defined $DB->{"Source"}{$V})
     { # already downloaded
         return -1;
     }
     
-    if(defined $DB->{"Installed"}{$V}
-    and not defined $In::Opt{"Redownload"})
+    my $NotNeeded = notNeededSrc($V);
+    
+    if($NotNeeded and not defined $In::Opt{"Redownload"})
     { # Do not download installed packages to save space
-        printMsg("INFO", "Skip downloading of already installed package for $V");
+        printMsg("INFO", "Skip downloading of already $NotNeeded package for $V");
         if(not defined $Cache{"RedownloadInfo"})
         {
             printMsg("TIP", "Use -redownload option to download it again");
@@ -807,30 +874,18 @@ sub getPackage($$$)
         {
             if(cmpVersions_P($V, $LatestVersion, $Profile)==-1)
             { # do not download previous alfa/beta/pre releases
-                return -1;
+                print $V." $LatestVersion\n";return -1;
             }
-        }
-    }
-    
-    if(defined $Profile->{"LatestMicro"})
-    {
-        if(isOldMicro($V, 2))
-        { # do not download old micro releases
-            return -1;
-        }
-    }
-    
-    if(defined $Profile->{"LatestNano"})
-    {
-        if(isOldMicro($V, 3))
-        { # do not download old nano releases
-            return -1;
         }
     }
     
     my $To = $Dir."/".$P;
     if(-f $To) {
         return -1;
+    }
+    
+    if(not -e $Dir) {
+        mkpath($Dir);
     }
     
     printMsg("INFO", "Downloading package \'$P\' ($TARGET_TITLE)");
@@ -983,10 +1038,10 @@ sub getPackages(@)
         {
             ($P, $V, $E) = ($2, $3, $5);
         }
-        elsif($Link=~/(archive|get)\/(|\w+\/)[v_]*([\d\.\-\_]+?([ab]\d*|alpha\.?\d*|beta\.?\d*|rc\d*|stable|release|))(\-src|\-source|\Q$Suffix\E|)\.(tar\.gz)/i)
+        elsif($Link=~/(archive|get)\/(refs\/tags\/|)(|\w+\/)[v_]*([\d\.\-\_]+?([ab]\d*|alpha\.?\d*|beta\.?\d*|rc\d*|stable|release|))(\-src|\-source|\Q$Suffix\E|)\.(tar\.gz)/i)
         { # github
           # bitbucket
-            ($V, $E) = ($3, $6);
+            ($V, $E) = ($4, $7);
         }
         elsif($Link=~/\/archive\.($PKG_EXT)\?ref=(.+)\Z/i)
         { # gitlab
@@ -1125,10 +1180,11 @@ sub skipOldLink($)
         return 0;
     }
     
-    if(defined $DB->{"Source"}{$V}) {
+    if(defined $DB->{"Source"}{$V}
+    and not defined $In::Opt{"Redownload"}) {
         return 1;
     }
-    elsif(defined $DB->{"Installed"}{$V}
+    elsif(notNeededSrc($V)
     and not defined $In::Opt{"Redownload"}) {
         return 1;
     }
@@ -1383,8 +1439,8 @@ sub cleanUnused()
             next;
         }
         
-        if(defined $DB->{"Installed"}{$V} or skipVersion($V, $Profile, 1)
-        or (defined $Profile->{"Versions"} and $Profile->{"Versions"}{$V}{"Deleted"}))
+        if(skipVersion($V, $Profile, 1)
+        or notNeededSrc($V))
         {
             if(defined $In::Opt{"Confirm"})
             {
@@ -1470,7 +1526,7 @@ sub buildVersions()
         }
         
         if(defined $Profile->{"Versions"} and defined $Profile->{"Versions"}{$V}
-        and defined $Profile->{"Versions"}{$V}{"Deleted"}) {
+        and $Profile->{"Versions"}{$V}{"Deleted"}) {
             next;
         }
         
@@ -1496,6 +1552,11 @@ sub buildVersions()
                 }
                 next;
             }
+        }
+        
+        if(isOldVer($V))
+        { # do not build old micro/nano releases
+            next;
         }
         
         my $R = buildPackage($DB->{"Source"}{$V}, $V);
@@ -1669,6 +1730,30 @@ sub createProfile()
                 if(not defined $MaxBeta) {
                     $MaxBeta = $V;
                 }
+            }
+        }
+    }
+    
+    if(defined $Profile->{"LatestMinor"})
+    {
+        my %MaxMinor = ();
+        foreach my $V (reverse(@Versions))
+        {
+            if($V eq "current") {
+                next;
+            }
+            
+            my $M = getMajor($V, 1);
+            
+            if(defined $MaxMinor{$M})
+            {
+                if(not defined $Profile->{"Versions"}{$V}{"Deleted"})
+                { # One can set Deleted to 0 in order to prevent deleting
+                    $Profile->{"Versions"}{$V}{"Deleted"} = 1;
+                }
+            }
+            else {
+                $MaxMinor{$M} = $V;
             }
         }
     }
@@ -2159,8 +2244,12 @@ sub autoBuild($$$)
         my $Cmd_C = "CFLAGS=\"$C_FLAGS\" CXXFLAGS=\"$CXX_FLAGS\" meson . $BDir --prefix=\"$To\" --buildtype=plain";
         
         my $MesonOptions = readFile("meson_options.txt");
-        while($MesonOptions=~/'(docs|enable\-docs|documentation|enable\-documentation|enable_docs|introspection|tests|enable\-tests|build\-tests|vapi|udev_rules|systemd|bash_completion|enable\-bash\-completion|man|enable\-man|enable\-systemd|enable\-vala|demos|enable\-udev\-rules)'/g) {
-            $Cmd_C .= " -D$1=false";
+        while($MesonOptions=~/'(docs|enable\-docs|documentation|enable\-documentation|enable_docs|introspection|tests|enable\-tests|build\-tests|vapi|udev_rules|systemd|bash_completion|enable\-bash\-completion|man|enable\-man|enable\-systemd|enable\-vala|demos|enable\-udev\-rules|gtk_doc)'/g)
+        {
+            my $Opt = $1;
+            if($ConfigOptions!~/D$Opt=/) {
+                $Cmd_C .= " -D$Opt=false";
+            }
         }
         
         if($ConfigOptions) {
@@ -2186,6 +2275,7 @@ sub autoBuild($$$)
     }
     elsif($Scons)
     {
+        my $ConfigLog = "$LogDir/scons";
         my $Cmd_I = "scons prefix=\"$To\" debug=True";
         
         if($ConfigOptions) {
@@ -2198,7 +2288,8 @@ sub autoBuild($$$)
         
         $Cmd_I .= " install";
         
-        $Cmd_I .= " >\"$LogDir/scons\" 2>&1";
+        writeFile($ConfigLog, $Cmd_I."\n\n");
+        $Cmd_I .= " >>\"$ConfigLog\" 2>&1";
         
         my $SConstruct = readFile("SConstruct");
         $SConstruct=~s/'-O[0123]'/'-Og'/;
@@ -2293,10 +2384,15 @@ sub autoBuild($$$)
             return 0;
         }
         
+        my $InstallTarget = "install";
+        if($Profile->{"InstallTarget"}) {
+            $InstallTarget = $Profile->{"InstallTarget"};
+        }
+        
         if(not defined $Profile->{"Install"}
         or $Profile->{"Install"} eq "On")
         {
-            my $Cmd_I = "make install";
+            my $Cmd_I = "make $InstallTarget";
             
             if($InstallGlobalVars) {
                 $Cmd_I = $InstallGlobalVars." ".$Cmd_I;
@@ -2307,7 +2403,7 @@ sub autoBuild($$$)
             qx/$Cmd_I/; # execute
             if($?)
             {
-                printMsg("ERROR", "failed to 'make install'");
+                printMsg("ERROR", "failed to 'make $InstallTarget'");
                 printMsg("ERROR", "see error log in '$LogDir_R/install'");
                 return 0;
             }
@@ -2485,7 +2581,7 @@ sub copyFiles($)
                 foreach my $F (@Files)
                 {
                     my $O_To = $To."/".$Dir."/".$F;
-                    $O_To=~s&/\.libs/&/&g;
+                    $O_To=~s&/(\.libs|build|$BUILD_SUBDIR)/&/&g;
                     my $D_To = getDirname($O_To);
                     mkpath($D_To);
                     copy($F, $D_To);
@@ -2773,8 +2869,8 @@ sub buildPackage($$)
             buildShared($V);
         }
         
-        if(not defined $Profile->{"ClearInstalled"}
-        or $Profile->{"ClearInstalled"} eq "On")
+        if((not defined $Profile->{"ClearInstalled"} or $Profile->{"ClearInstalled"} eq "On")
+        and (not $In::Opt{"ClearInstalled"} or $In::Opt{"ClearInstalled"} eq "On"))
         {
             foreach my $D ("share", "bin", "sbin",
             "etc", "var", "opt", "libexec", "doc",
@@ -2922,6 +3018,9 @@ sub buildShared($)
         
         chdir($To);
         my $Cmd_B = $GCC." -shared -o \"$Object_S\" -Wl,--whole-archive \"$Object_A\" -Wl,--no-whole-archive"; # -nostdlib
+        if(my $AddOpt = $Profile->{"BuildSharedFlags"}) {
+            $Cmd_B .= " ".$AddOpt;
+        }
         qx/$Cmd_B/;
         
         if($? or not -f $Object_S)
@@ -3072,6 +3171,32 @@ sub scenario()
         exitStatus("Error", "Can't execute inside the Java API tracker home directory");
     }
     
+    if($In::Opt{"DetectDeps"})
+    {
+        my %Deps = ();
+        
+        foreach my $D ("build_script", "profile")
+        {
+            if(not -d $D) {
+                next;
+            }
+            my $Out = `grep -nR INSTALL_ROOT $D`;
+            my @Deps = ($Out=~/INSTALL_ROOT}?\/([^\/]+\/[^\/ '":;{]+)/g);
+            foreach (@Deps) {
+                $Deps{$_} = 1;
+            }
+        }
+        
+        foreach my $Dep (sort keys(%Deps))
+        {
+            if(not -d $INSTALLED."/".$Dep) {
+                print $INSTALLED."/".$Dep."\n";
+            }
+        }
+        
+        exit(0);
+    }
+    
     $Profile_Path = $ARGV[0];
     
     if(not $Profile_Path) {
@@ -3092,6 +3217,7 @@ sub scenario()
     {
         $Profile->{"Install"} = "Off";
         $Profile->{"PostInstall"} = $Profile->{"InstallScenario"};
+        delete($Profile->{"InstallScenario"});
     }
     
     if(defined $Profile->{"LocalBuild"}
@@ -3157,6 +3283,10 @@ sub scenario()
     
     if($TMP_DIR_LOC eq "On") {
         rmtree($TMP_DIR);
+    }
+    
+    if($In::Opt{"Analyze"} and checkCmd("abi-tracker")) {
+        system("abi-tracker", $Profile_Path, "-build");
     }
 }
 
